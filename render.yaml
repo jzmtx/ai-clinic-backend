@@ -18,7 +18,8 @@ services:
     env: python
     pythonVersion: "3.12"
     buildCommand: "./build.sh"
-    startCommand: "gunicorn clinic_token_system.wsgi"
+    # --- THE FIX IS HERE ---
+    startCommand: "python manage.py migrate && gunicorn clinic_token_system.wsgi"
     envVars:
       - key: DATABASE_URL
         fromService:
@@ -55,6 +56,6 @@ services:
           name: redis
           property: connectionString
       - key: SECRET_KEY
-        generateValue: true # <-- THE FIX IS HERE
+        generateValue: true
       - key: DJANGO_DEBUG
         value: "False"
