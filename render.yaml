@@ -16,6 +16,7 @@ services:
     type: web
     plan: free
     env: python
+    pythonVersion: "3.12"
     buildCommand: "./build.sh"
     startCommand: "gunicorn clinic_token_system.wsgi"
     envVars:
@@ -39,6 +40,7 @@ services:
     type: worker
     plan: free
     env: python
+    pythonVersion: "3.12"
     buildCommand: "./build.sh"
     startCommand: "celery -A clinic_token_system.celery worker -P gevent --loglevel=info"
     envVars:
@@ -53,8 +55,6 @@ services:
           name: redis
           property: connectionString
       - key: SECRET_KEY
-        fromService:
-          type: web
-          property: envVar.SECRET_KEY
+        generateValue: true # <-- THE FIX IS HERE
       - key: DJANGO_DEBUG
         value: "False"
