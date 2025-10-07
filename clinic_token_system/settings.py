@@ -1,12 +1,12 @@
 import os
 from pathlib import Path
 import dj_database_url
+import ssl # <-- ADD THIS LINE
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # SECURITY WARNING: keep the secret key used in production secret!
-# The secret key is now read from an environment variable.
 SECRET_KEY = os.environ.get(
     'SECRET_KEY', 
     'django-insecure-=+c$c$j4z!0d9v$j1w!5a)0i=d!o(l!&!1v(l3x(e&n&n7z_d3'
@@ -19,7 +19,7 @@ ALLOWED_HOSTS = [
     '127.0.0.1',
     'localhost',
 ]
-# Heroku adds its own hostname to this list automatically.
+# Render will add its own hostname to this list automatically.
 
 
 # Application definition
@@ -77,7 +77,6 @@ WSGI_APPLICATION = 'clinic_token_system.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
-# This will use the Heroku DATABASE_URL if it exists, otherwise it will use SQLite.
 DATABASES = {
     'default': dj_database_url.config(
         default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}"
@@ -140,10 +139,20 @@ TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
 TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
 
 # ====================================================================
-# CELERY SETTINGS (from environment variables)
+# CELERY SETTINGS
 # ====================================================================
 CELERY_BROKER_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 CELERY_RESULT_BACKEND = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+
+# --- NEW SSL SETTINGS TO FIX DEPLOYMENT ---
+CELERY_BROKER_USE_SSL = {
+    'ssl_cert_reqs': ssl.CERT_NONE
+}
+CELERY_REDIS_BACKEND_USE_SSL = {
+    'ssl_cert_reqs': ssl.CERT_NONE
+}
+# ------------------------------------------
+
 CELERY_ACCEPT_CONTENT = ['application/json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
