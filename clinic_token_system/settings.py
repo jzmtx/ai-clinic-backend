@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 import dj_database_url
-import ssl # <-- ADD THIS LINE
+import ssl
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -12,7 +12,7 @@ SECRET_KEY = os.environ.get(
     'django-insecure-=+c$c$j4z!0d9v$j1w!5a)0i=d!o(l!&!1v(l3x(e&n&n7z_d3'
 )
 
-# DEBUG will be False on Heroku, but True on your local machine by default.
+# DEBUG will be False on Render, but True on your local machine by default.
 DEBUG = os.environ.get('DJANGO_DEBUG', '') != 'False'
 
 ALLOWED_HOSTS = [
@@ -23,7 +23,6 @@ ALLOWED_HOSTS = [
 
 
 # Application definition
-
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -76,7 +75,6 @@ WSGI_APPLICATION = 'clinic_token_system.wsgi.application'
 
 
 # Database
-# https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 DATABASES = {
     'default': dj_database_url.config(
         default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}"
@@ -85,8 +83,6 @@ DATABASES = {
 
 
 # Password validation
-# https://docs.djangoproject.com/en/5.2/ref/settings/#auth-password-validators
-
 AUTH_PASSWORD_VALIDATORS = [
     { 'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator', },
     { 'NAME': 'django.contrib.auth.password_validation.MinimumLengthValidator', },
@@ -103,8 +99,6 @@ REST_FRAMEWORK = {
 
 
 # Internationalization
-# https://docs.djangoproject.com/en/5.2/topics/i18n/
-
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
@@ -112,21 +106,16 @@ USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
-# https://docs.djangoproject.com/en/5.2/howto/static-files/
-
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
 
 
 # Default primary key field type
-# https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
-
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # --- CORS SETTINGS ---
-# We will add the live frontend URL here later.
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
 ]
@@ -141,17 +130,17 @@ TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
 # ====================================================================
 # CELERY SETTINGS
 # ====================================================================
-CELERY_BROKER_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+CELERY_BROKER_URL = os.environ.get('REDIS_URL')
+CELERY_RESULT_BACKEND = os.environ.get('REDIS_URL')
 
-# --- NEW SSL SETTINGS TO FIX DEPLOYMENT ---
-CELERY_BROKER_USE_SSL = {
-    'ssl_cert_reqs': ssl.CERT_NONE
+# --- THE CORRECT, MODERN SSL SETTINGS ---
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    "ssl_cert_reqs": ssl.CERT_NONE,
 }
-CELERY_REDIS_BACKEND_USE_SSL = {
-    'ssl_cert_reqs': ssl.CERT_NONE
+CELERY_RESULT_BACKEND_TRANSPORT_OPTIONS = {
+    "ssl_cert_reqs": ssl.CERT_NONE,
 }
-# ------------------------------------------
+# ----------------------------------------
 
 CELERY_ACCEPT_CONTENT = ['application/json']
 CELERY_TASK_SERIALIZER = 'json'
