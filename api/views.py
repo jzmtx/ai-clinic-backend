@@ -75,7 +75,7 @@ class ClinicAnalyticsView(APIView):
 
 class PatientRegisterView(generics.CreateAPIView):
     serializer_class = PatientRegisterSerializer
-    permission_classes = []
+    permission_classes = [permissions.AllowAny]
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
