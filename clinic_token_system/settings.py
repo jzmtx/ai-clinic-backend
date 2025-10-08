@@ -25,7 +25,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'whitenoise.runserver_nostatic',
     'django.contrib.staticfiles',
-    'django_q',
+    'django_q_registry', # <-- UPDATED FOR django-q2
     'rest_framework',
     'rest_framework.authtoken',
     'corsheaders',
@@ -97,7 +97,6 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
 ]
-# We will add the live frontend URL here later.
 RENDER_EXTERNAL_URL = os.environ.get('RENDER_EXTERNAL_URL')
 if RENDER_EXTERNAL_URL:
     CORS_ALLOWED_ORIGINS.append(RENDER_EXTERNAL_URL)
@@ -109,7 +108,7 @@ TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
 TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
 
 # ====================================================================
-# DJANGO-Q SETTINGS (Replaces Celery)
+# DJANGO-Q SETTINGS
 # ====================================================================
 Q_CLUSTER = {
     'name': 'clinic-q',
