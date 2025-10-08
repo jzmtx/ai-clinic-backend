@@ -7,7 +7,7 @@ def create_superuser(apps, schema_editor):
         User.objects.create_superuser(
             username='admin',
             email='admin@example.com',
-            password='YOUR_SECURE_PASSWORD_HERE' # <-- CHOOSE A STRONG PASSWORD
+            password='Admin@123kp' # <-- CHOOSE A STRONG PASSWORD
         )
 
 class Migration(migrations.Migration):
