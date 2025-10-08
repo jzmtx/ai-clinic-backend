@@ -22,7 +22,7 @@ dj-database-url==3.0.1
 Django==5.2.5
 django-cors-headers==4.7.0
 django-picklefield==3.3
-django-q==2.0.1
+django-q2==1.8.0
 djangorestframework==3.16.1
 frozenlist==1.7.0
 gevent==25.9.1
