@@ -25,10 +25,9 @@ from django.db import transaction
 
 # --- Core App Imports ---
 from .utils import send_sms_notification
-# --- UPDATED: Imports for Django-Q Scheduling ---
+# --- Imports for Django-Q Scheduling ---
 from django_q.tasks import async_task
 from datetime import datetime, timedelta, time
-
 
 # --- Helper Functions ---
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -39,11 +38,10 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     return R * (2 * atan2(sqrt(a), sqrt(1 - a)))
 
 # --- Public & Private Views ---
-# ... (All other views are unchanged)
 class PublicClinicListView(generics.ListAPIView):
     queryset = Clinic.objects.prefetch_related('doctors').all()
     serializer_class = ClinicWithDoctorsSerializer
-    permission_classes = []
+    permission_classes = [permissions.AllowAny] # Explicitly public
 
 class ClinicAnalyticsView(APIView):
     permission_classes = [IsAuthenticated]
@@ -75,7 +73,7 @@ class ClinicAnalyticsView(APIView):
 
 class PatientRegisterView(generics.CreateAPIView):
     serializer_class = PatientRegisterSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [permissions.AllowAny] # Explicitly public
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         if serializer.is_valid():
@@ -92,7 +90,6 @@ class PatientRegisterView(generics.CreateAPIView):
 
 class ConfirmArrivalView(APIView):
     permission_classes = [IsAuthenticated]
-    # ... (rest of the view is unchanged)
     def post(self, request, *args, **kwargs):
         user = request.user
         user_lat, user_lon = request.data.get('latitude'), request.data.get('longitude')
@@ -112,7 +109,6 @@ class ConfirmArrivalView(APIView):
 
 class PatientCancelTokenView(APIView):
     permission_classes = [IsAuthenticated]
-    # ... (rest of the view is unchanged)
     def post(self, request, *args, **kwargs):
         user = request.user
         if not hasattr(user, 'patient'): return Response({'error': 'No patient profile found.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -126,7 +122,6 @@ class PatientCancelTokenView(APIView):
 
 class GetPatientTokenView(APIView):
     permission_classes = [IsAuthenticated]
-    # ... (rest of the view is unchanged)
     def get(self, request, *args, **kwargs):
         user = request.user
         if not hasattr(user, 'patient'): return Response({'error': 'No patient profile found.'}, status=status.HTTP_400_BAD_REQUEST)
@@ -142,7 +137,6 @@ class ClinicWithDoctorsListView(generics.ListAPIView):
 
 class PatientCreateTokenView(APIView):
     permission_classes = [IsAuthenticated]
-    # ... (rest of the view is unchanged)
     def post(self, request, *args, **kwargs):
         user, doctor_id = request.user, request.data.get('doctor_id')
         if not hasattr(user, 'patient'): return Response({'error': 'Only patients can create tokens.'}, status=status.HTTP_403_FORBIDDEN)
@@ -161,60 +155,97 @@ class PatientCreateTokenView(APIView):
 class TokenListCreate(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TokenSerializer
-    # ... (rest of the view is unchanged)
     def get_queryset(self):
-        # ...
+        user = self.request.user
+        clinic = None
+        if hasattr(user, 'doctor'): clinic = user.doctor.clinic
+        elif hasattr(user, 'receptionist'): clinic = user.receptionist.clinic
+        if clinic:
+            return Token.objects.filter(clinic=clinic, date=timezone.now().date(), status__in=['waiting', 'confirmed']).order_by('created_at')
         return Token.objects.none()
+
     def post(self, request, *args, **kwargs):
-        # ...
-        return Response({})
+        patient_name, patient_age, phone_number, doctor_id = request.data.get('patient_name'), request.data.get('patient_age'), request.data.get('phone_number'), request.data.get('assigned_doctor')
+        if not all([patient_name, patient_age, phone_number, doctor_id]): return Response({'error': 'Missing required fields'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            doctor = Doctor.objects.get(id=doctor_id)
+            patient, _ = Patient.objects.get_or_create(phone_number=phone_number, defaults={'name': patient_name, 'age': patient_age})
+            new_token = Token.objects.create(patient=patient, doctor=doctor)
+            message = f"Dear {patient.name}, your token {new_token.token_number} for Dr. {doctor.name} at {doctor.clinic.name} has been confirmed."
+            send_sms_notification(patient.phone_number, message)
+            return Response(TokenSerializer(new_token).data, status=status.HTTP_201_CREATED)
+        except Doctor.DoesNotExist: return Response({'error': 'Doctor not found'}, status=status.HTTP_404_NOT_FOUND)
 
 class DoctorList(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = DoctorSerializer
-    # ... (rest of the view is unchanged)
     def get_queryset(self):
-        # ...
+        user = self.request.user
+        clinic = None
+        if hasattr(user, 'doctor'): clinic = user.doctor.clinic
+        elif hasattr(user, 'receptionist'): clinic = user.receptionist.clinic
+        if clinic:
+            return Doctor.objects.filter(clinic=clinic)
         return Doctor.objects.none()
 
 class LoginView(APIView):
-    permission_classes = []
-    # ... (rest of the view is unchanged)
-    def post(self, request, *args, **kwargs):
-        # ...
-        return Response({})
+    permission_classes = [permissions.AllowAny] # <-- THE FIX IS HERE
+    def post(self, request, format=None):
+        username, password = request.data.get('username'), request.data.get('password')
+        user = authenticate(request, username=username, password=password)
+        if user:
+            token, _ = AuthToken.objects.get_or_create(user=user)
+            user_data = {'token': token.key}
+            role, profile_data = None, None
+            
+            if hasattr(user, 'doctor'): 
+                role, profile_data = 'doctor', DoctorSerializer(user.doctor).data
+            elif hasattr(user, 'receptionist'):
+                role = 'receptionist'
+                clinic = user.receptionist.clinic
+                profile_data = {'username': user.username, 'clinic': {'id': clinic.id, 'name': clinic.name} if clinic else None}
+            elif hasattr(user, 'patient'): 
+                role = 'patient'
+                patient = user.patient
+                profile_data = PatientSerializer(patient).data
+            
+            if role: 
+                user_data['user'] = {**profile_data, 'role': role}
+                return Response(user_data)
+            
+            return Response({'error': 'User profile not found'}, status=status.HTTP_404_NOT_FOUND)
+        return Response({'error': 'Invalid Credentials'}, status=status.HTTP_400_BAD_REQUEST)
 
 class MyHistoryView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = ConsultationSerializer
-    # ... (rest of the view is unchanged)
     def get_queryset(self):
-        # ...
+        user = self.request.user
+        if hasattr(user, 'patient'):
+            return Consultation.objects.filter(patient=user.patient).order_by('-date')
         return Consultation.objects.none()
 
 class PatientHistoryView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = ConsultationSerializer
-    # ... (rest of the view is unchanged)
-    def get_queryset(self):
-        # ...
-        return Consultation.objects.none()
+    def get_queryset(self): 
+        return Consultation.objects.filter(patient__id=self.kwargs['patient_id']).order_by('-date')
 
 class PatientLiveQueueView(generics.ListAPIView):
     serializer_class = AnonymizedTokenSerializer
     permission_classes = [permissions.IsAuthenticated]
-    # ... (rest of the view is unchanged)
     def get_queryset(self):
-        # ...
-        return Token.objects.none()
+        doctor_id = self.kwargs['doctor_id']
+        today = timezone.now().date()
+        active_statuses = ['waiting', 'confirmed', 'in_consultancy']
+        return Token.objects.filter(
+            doctor_id=doctor_id,
+            date=today,
+            status__in=active_statuses
+        ).order_by('token_number')
 
-
-# =================================================================================
-# --- CONSULTATION VIEW WITH DJANGO-Q SCHEDULING ---
-# =================================================================================
 class ConsultationCreateView(APIView):
     permission_classes = [IsAuthenticated]
-
     def post(self, request, *args, **kwargs):
         data = request.data
         patient_id = data.get('patient')
@@ -244,7 +275,6 @@ class ConsultationCreateView(APIView):
                 except Token.DoesNotExist:
                     pass
 
-                # --- NEW DJANGO-Q SCHEDULING LOGIC ---
                 if patient.phone_number and new_prescription_items:
                     MORNING_DOSE_TIME = time(8, 0)
                     AFTERNOON_DOSE_TIME = time(13, 0)
@@ -284,34 +314,111 @@ class ConsultationCreateView(APIView):
 class TokenUpdateStatusView(generics.UpdateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TokenSerializer
-    # ... (rest of the view is unchanged)
+    lookup_field = 'id'
+    
     def get_queryset(self):
-        #...
+        user = self.request.user
+        clinic = None
+        if hasattr(user, 'doctor'): clinic = user.doctor.clinic
+        elif hasattr(user, 'receptionist'): clinic = user.receptionist.clinic
+        if clinic:
+            return Token.objects.filter(clinic=clinic, date=timezone.now().date())
         return Token.objects.none()
-    def patch(self, request, *args, **kwargs):
-        #...
-        return Response({})
 
+    def patch(self, request, *args, **kwargs):
+        instance = self.get_object()
+        new_status = request.data.get('status')
+        if new_status not in ['confirmed', 'completed', 'skipped', 'cancelled', 'in_consultancy']:
+            return Response({'error': 'Invalid or not allowed status update.'}, status=status.HTTP_400_BAD_REQUEST)
+        instance.status = new_status
+        instance.save()
+        return Response(TokenSerializer(instance).data)
 
 # ====================================================================
 # --- IVR LOGIC ---
 # ====================================================================
-# ... (All IVR functions are unchanged)
 def create_and_speak_token(response, doctor, caller_phone_number, age=0):
-    pass
+    patient_name = f"IVR Patient {caller_phone_number[-4:]}"
+    patient, _ = Patient.objects.get_or_create(phone_number=caller_phone_number, defaults={'name': patient_name, 'age': age})
+    
+    if Token.objects.filter(patient=patient, date=timezone.now().date()).exclude(status__in=['completed', 'cancelled']).exists():
+        response.say(f"You already have an active token for today. Please check your SMS. Goodbye.")
+        response.hangup()
+        return response
+
+    new_token = Token.objects.create(patient=patient, doctor=doctor)
+    message = f"Your token for Dr. {doctor.name} at {doctor.clinic.name} is {new_token.token_number}."
+    send_sms_notification(patient.phone_number, message)
+    
+    token_number_spoken = " ".join(list(str(new_token.token_number)))
+    response.say(f"You have been assigned to Doctor {doctor.name}. Your token is {token_number_spoken}. An SMS has been sent. Goodbye.")
+    response.hangup()
+    return response
 
 @csrf_exempt
 def ivr_welcome(request):
-    pass
+    response = VoiceResponse()
+    gather = response.gather(num_digits=1, action='/api/ivr/select_clinic/')
+    say_message = "Welcome. Please select a clinic. "
+    clinics = Clinic.objects.all()
+    if not clinics: 
+        response.say("Sorry, no clinics are configured. Goodbye.")
+        response.hangup()
+    else:
+        for i, clinic in enumerate(clinics): say_message += f"For {clinic.name}, press {i + 1}. "
+        gather.say(say_message)
+        response.redirect('/api/ivr/welcome/')
+    return HttpResponse(str(response), content_type='text/xml')
 
 @csrf_exempt
 def ivr_select_clinic(request):
-    pass
+    choice = request.POST.get('Digits')
+    response = VoiceResponse()
+    try:
+        clinic = Clinic.objects.all()[int(choice) - 1]
+        gather = response.gather(num_digits=1, action=f'/api/ivr/handle_booking_type/{clinic.id}/')
+        gather.say(f"You selected {clinic.name}. For next available doctor, press 1. To choose a specific doctor, press 2.")
+        response.redirect(f'/api/ivr/select_clinic/')
+    except (ValueError, IndexError):
+        response.say("Invalid choice.")
+        response.redirect('/api/ivr/welcome/')
+    return HttpResponse(str(response), content_type='text/xml')
 
 @csrf_exempt
 def ivr_handle_booking_type(request, clinic_id):
-    pass
+    choice = request.POST.get('Digits')
+    response = VoiceResponse()
+    try:
+        clinic = Clinic.objects.get(id=clinic_id)
+        if choice == '1':
+            doctor = Doctor.objects.filter(clinic=clinic).annotate(num_tokens=Count('token', filter=Q(date=timezone.now().date()))).order_by('num_tokens').first()
+            if not doctor: 
+                response.say("Sorry, no doctors are available.")
+                response.hangup()
+            else: 
+                create_and_speak_token(response, doctor, request.POST.get('From', 'Unknown'))
+        elif choice == '2':
+            gather = response.gather(num_digits=1, action=f'/api/ivr/handle_specific_doctor/{clinic.id}/')
+            say_message = "Please select a doctor. "
+            for i, doctor in enumerate(Doctor.objects.filter(clinic=clinic)): 
+                say_message += f"For Doctor {doctor.name}, press {i + 1}. "
+            gather.say(say_message)
+        else: 
+            response.say("Invalid choice.")
+            response.redirect(f'/api/ivr/handle_booking_type/{clinic_id}/')
+    except Clinic.DoesNotExist: 
+        response.say("Clinic not found.")
+        response.hangup()
+    return HttpResponse(str(response), content_type='text/xml')
 
 @csrf_exempt
 def ivr_handle_specific_doctor(request, clinic_id):
-    pass
+    choice = request.POST.get('Digits')
+    response = VoiceResponse()
+    try:
+        doctor = Doctor.objects.filter(clinic_id=clinic_id)[int(choice) - 1]
+        create_and_speak_token(response, doctor, request.POST.get('From', 'Unknown'))
+    except (ValueError, IndexError):
+        response.say("Invalid choice.")
+        response.redirect(f'/api/ivr/handle_booking_type/{clinic_id}/')
+    return HttpResponse(str(response), content_type='text/xml')
