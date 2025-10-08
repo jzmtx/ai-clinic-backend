@@ -25,7 +25,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'whitenoise.runserver_nostatic',
     'django.contrib.staticfiles',
-    'django_q', # <-- CORRECT APP NAME
+    'django_q', 
     'rest_framework',
     'rest_framework.authtoken',
     'corsheaders',
@@ -117,5 +117,5 @@ Q_CLUSTER = {
     'retry': 120,
     'queue_limit': 50,
     'catch_up': False,
-    'redis': os.environ.get('REDIS_URL')
+    # The 'redis' key is now removed to let django-q find it automatically
 }
