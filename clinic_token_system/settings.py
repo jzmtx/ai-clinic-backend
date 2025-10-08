@@ -25,7 +25,7 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'whitenoise.runserver_nostatic',
     'django.contrib.staticfiles',
-    'django_q_registry', # <-- UPDATED FOR django-q2
+    'django_q', # <-- CORRECT APP NAME
     'rest_framework',
     'rest_framework.authtoken',
     'corsheaders',
