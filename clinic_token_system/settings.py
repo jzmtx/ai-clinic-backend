@@ -117,5 +117,5 @@ Q_CLUSTER = {
     'retry': 120,
     'queue_limit': 50,
     'catch_up': False,
-    # The 'redis' key is now removed to let django-q find it automatically
+    'redis': os.environ.get('REDIS_URL') # <-- ADD THIS LINE BACK
 }
