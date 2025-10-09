@@ -1,6 +1,9 @@
 from rest_framework import serializers
-from django.contrib.auth.models import User
+from django.contrib.auth import get_user_model
 from .models import Doctor, Patient, Token, Consultation, Clinic, Receptionist, PrescriptionItem
+
+# Get the User model
+User = get_user_model()
 
 # --- Base Serializers ---
 
@@ -67,6 +70,7 @@ class PatientRegisterSerializer(serializers.ModelSerializer):
     name = serializers.CharField(write_only=True, required=True)
     age = serializers.IntegerField(write_only=True, required=True)
     phone_number = serializers.CharField(write_only=True, required=True)
+
     class Meta:
         model = User
         fields = ('username', 'password', 'password2', 'name', 'age', 'phone_number')
@@ -76,12 +80,20 @@ class PatientRegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"password": "Password fields didn't match."})
         return attrs
 
+    # --- MODIFIED METHOD ---
     def create(self, validated_data):
-        user = User.objects.create(username=validated_data['username'])
-        user.set_password(validated_data['password'])
-        user.save()
+        # Use create_user to properly handle password hashing and activation
+        user = User.objects.create_user(
+            username=validated_data['username'],
+            password=validated_data['password']
+            # No need for user.save() here, create_user does it
+        )
+        
+        # Create the associated patient profile
         Patient.objects.create(
-            user=user, name=validated_data['name'], age=validated_data['age'],
+            user=user,
+            name=validated_data['name'],
+            age=validated_data['age'],
             phone_number=validated_data['phone_number']
         )
         return user

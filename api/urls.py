@@ -10,11 +10,7 @@ urlpatterns = [
 
     # --- Patient Self-Service URLs ---
     path('register/patient/', views.PatientRegisterView.as_view(), name='patient-register'),
-
-    # --- NEW OTP URLs ---
-    path('register/verify-otp/', views.VerifyOTPView.as_view(), name='verify-otp'),
-    path('register/resend-otp/', views.ResendOTPView.as_view(), name='resend-otp'),
-
+    # OTP URLs have been removed
     path('tokens/get_my_token/', views.GetPatientTokenView.as_view(), name='get-patient-token'),
     path('tokens/confirm_arrival/', views.ConfirmArrivalView.as_view(), name='confirm-arrival'),
     path('clinics_with_doctors/', views.ClinicWithDoctorsListView.as_view(), name='clinics-with-doctors'),
@@ -39,9 +35,12 @@ urlpatterns = [
     path('history/<int:patient_id>/', views.PatientHistoryView.as_view(), name='patient-history'),
     path('consultations/create/', views.ConsultationCreateView.as_view(), name='consultation-create'),
 
-    # --- IVR URLS ---
+    # --- Advanced IVR URLs ---
     path('ivr/welcome/', views.ivr_welcome, name='ivr-welcome'),
-    path('ivr/select_clinic/', views.ivr_select_clinic, name='ivr-select-clinic'),
-    path('ivr/handle_booking_type/<int:clinic_id>/', views.ivr_handle_booking_type, name='ivr-handle-booking-type'),
-    path('ivr/handle_specific_doctor/<int:clinic_id>/', views.ivr_handle_specific_doctor, name='ivr-handle-specific-doctor'),
+    path('ivr/handle-state/', views.ivr_handle_state, name='ivr-handle-state'),
+    path('ivr/handle-district/<int:state_id>/', views.ivr_handle_district, name='ivr-handle-district'),
+    path('ivr/handle-clinic/<int:district_id>/', views.ivr_handle_clinic, name='ivr-handle-clinic'),
+    path('ivr/handle-booking-type/<int:clinic_id>/', views.ivr_handle_booking_type, name='ivr-handle-booking-type'),
+    path('ivr/handle-specialization/<int:clinic_id>/', views.ivr_handle_specialization, name='ivr-handle-specialization'),
+    path('ivr/handle-doctor/<int:clinic_id>/<str:spec>/', views.ivr_handle_doctor, name='ivr-handle-doctor'),
 ]

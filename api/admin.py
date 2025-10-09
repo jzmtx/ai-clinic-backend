@@ -1,5 +1,6 @@
 from django.contrib import admin
 from .models import Doctor, Patient, Token, Consultation, Clinic, Receptionist
+from .models import State, District
 
 class PatientAdmin(admin.ModelAdmin):
     list_display = ('name', 'age', 'user', 'phone_number') 
@@ -16,3 +17,6 @@ admin.site.register(Consultation)
 admin.site.register(Clinic, ClinicAdmin) 
 admin.site.register(Receptionist)
 
+
+admin.site.register(State)
+admin.site.register(District)

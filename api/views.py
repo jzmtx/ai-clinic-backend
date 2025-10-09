@@ -4,7 +4,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.authtoken.models import Token as AuthToken
 from rest_framework.views import APIView
-from .models import Token, Doctor, Patient, Consultation, Receptionist, Clinic, PrescriptionItem
+from .models import Token, Doctor, Patient, Consultation, Receptionist, Clinic, PrescriptionItem, State, District
 from .serializers import (
     TokenSerializer,
     DoctorSerializer,
@@ -39,9 +39,6 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     dlon, dlat = lon2_rad - lon1_rad, lat2_rad - lat1_rad
     a = sin(dlat / 2)**2 + cos(lat1_rad) * cos(lat2_rad) * sin(dlon / 2)**2
     return R * (2 * atan2(sqrt(a), sqrt(1 - a)))
-
-def generate_otp():
-    return str(random.randint(100000, 999999))
 
 class AvailableSlotsView(APIView):
     permission_classes = [IsAuthenticated]
@@ -112,102 +109,32 @@ class ClinicAnalyticsView(APIView):
         }
         return Response(stats, status=status.HTTP_200_OK)
 
+# --- UPDATED REGISTRATION VIEW (NO OTP) ---
 class PatientRegisterView(generics.CreateAPIView):
     serializer_class = PatientRegisterSerializer
     permission_classes = [permissions.AllowAny]
 
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if serializer.is_valid():
+            # User is created and is active by default now
+            user = serializer.save()
+            patient = user.patient
+            
+            # Immediately generate a token to log them in
+            token, _ = AuthToken.objects.get_or_create(user=user)
 
-        # Create user but set as inactive until OTP verification
-        user = serializer.save()
-        user.is_active = False 
-        user.save()
+            # Send a welcome SMS instead of OTP
+            if patient.phone_number:
+                message = f"Welcome to ClinicFlow AI, {patient.name}! Your registration was successful."
+                send_sms_notification(patient.phone_number, message)
+            
+            # Return user data and token, logging them in instantly
+            patient_data = PatientSerializer(patient).data
+            user_data = { 'token': token.key, 'user': {**patient_data, 'role': 'patient'} }
 
-        patient = user.patient
-        
-        # Generate and save OTP
-        otp = generate_otp()
-        otp_expiry = timezone.now() + timedelta(minutes=10)
-        patient.otp = otp
-        patient.otp_expiry = otp_expiry
-        patient.save()
-
-        # Send OTP via SMS
-        if patient.phone_number:
-            message = f"Your ClinicFlow AI verification code is: {otp}. It is valid for 10 minutes."
-            send_sms_notification(patient.phone_number, message)
-        
-        return Response({
-            "message": "Registration successful. Please check your phone for a verification code.",
-            "phone_number": patient.phone_number # Send phone number back to frontend
-        }, status=status.HTTP_201_CREATED)
-
-class VerifyOTPView(APIView):
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request, *args, **kwargs):
-        phone_number = request.data.get('phone_number')
-        otp = request.data.get('otp')
-
-        if not phone_number or not otp:
-            return Response({'error': 'Phone number and OTP are required.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            patient = Patient.objects.get(phone_number=phone_number)
-        except Patient.DoesNotExist:
-            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
-        
-        if patient.otp != otp:
-            return Response({'error': 'Invalid OTP code.'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        if timezone.now() > patient.otp_expiry:
-            return Response({'error': 'OTP has expired. Please request a new one.'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Verification successful
-        user = patient.user
-        user.is_active = True
-        user.save()
-
-        patient.is_phone_verified = True
-        patient.otp = None
-        patient.otp_expiry = None
-        patient.save()
-
-        # Log the user in by returning a token
-        token, _ = AuthToken.objects.get_or_create(user=user)
-        patient_data = PatientSerializer(patient).data
-        user_data = { 'token': token.key, 'user': {**patient_data, 'role': 'patient'} }
-
-        return Response(user_data, status=status.HTTP_200_OK)
-
-class ResendOTPView(APIView):
-    permission_classes = [permissions.AllowAny]
-
-    def post(self, request, *args, **kwargs):
-        phone_number = request.data.get('phone_number')
-        if not phone_number:
-            return Response({'error': 'Phone number is required.'}, status=status.HTTP_400_BAD_REQUEST)
-        
-        try:
-            patient = Patient.objects.get(phone_number=phone_number)
-        except Patient.DoesNotExist:
-            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
-
-        # Generate and save a new OTP
-        otp = generate_otp()
-        otp_expiry = timezone.now() + timedelta(minutes=10)
-        patient.otp = otp
-        patient.otp_expiry = otp_expiry
-        patient.save()
-
-        # Re-send OTP via SMS
-        message = f"Your new ClinicFlow AI verification code is: {otp}. It is valid for 10 minutes."
-        send_sms_notification(patient.phone_number, message)
-        
-        return Response({'message': 'A new verification code has been sent.'}, status=status.HTTP_200_OK)
+            return Response(user_data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ConfirmArrivalView(APIView):
@@ -476,52 +403,124 @@ class TokenUpdateStatusView(generics.UpdateAPIView):
         return Response(TokenSerializer(instance).data)
 
 # ====================================================================
-# --- IVR LOGIC ---
+# --- ADVANCED IVR LOGIC ---
 # ====================================================================
-def create_and_speak_token(response, doctor, caller_phone_number, age=0):
+
+# Helper function for creating tokens via IVR
+def create_and_speak_token(response, doctor, caller_phone_number):
     patient_name = f"IVR Patient {caller_phone_number[-4:]}"
-    patient, _ = Patient.objects.get_or_create(phone_number=caller_phone_number, defaults={'name': patient_name, 'age': age})
+    patient, _ = Patient.objects.get_or_create(phone_number=caller_phone_number, defaults={'name': patient_name, 'age': 0})
+    
     if Token.objects.filter(patient=patient, date=timezone.now().date()).exclude(status__in=['completed', 'cancelled']).exists():
-        response.say(f"You already have an active token for today. Please check your SMS. Goodbye.")
+        response.say("You already have an active appointment for today. Please check your SMS. Goodbye.")
         response.hangup()
         return response
-    with transaction.atomic():
-        last_token = Token.objects.filter(clinic=doctor.clinic, date=timezone.now().date(), token_number__isnull=False).order_by('-token_number').first()
-        next_token_number = (last_token.token_number + 1) if last_token else 1
-        new_token = Token.objects.create(patient=patient, doctor=doctor, clinic=doctor.clinic, token_number=next_token_number, status='confirmed')
-    message = f"Your token for Dr. {doctor.name} at {doctor.clinic.name} is {new_token.token_number}."
+
+    today_str = timezone.now().date().strftime('%Y-%m-%d')
+    slots_view = AvailableSlotsView()
+    available_slots = slots_view.get(request=None, doctor_id=doctor.id, date=today_str).data
+    
+    if not available_slots:
+        response.say(f"Sorry, Dr. {doctor.name} has no available slots for today.")
+        response.hangup()
+        return response
+
+    first_slot_str = available_slots[0]
+    appointment_time = datetime.strptime(first_slot_str, '%H:%M').time()
+    
+    new_appointment = Token.objects.create(
+        patient=patient, 
+        doctor=doctor, 
+        clinic=doctor.clinic, 
+        date=timezone.now().date(), 
+        appointment_time=appointment_time, 
+        status='waiting'
+    )
+    
+    message = (f"Your appointment with Dr. {doctor.name} at {doctor.clinic.name} "
+               f"is confirmed for {appointment_time.strftime('%I:%M %p')} today.")
     send_sms_notification(patient.phone_number, message)
-    token_number_spoken = " ".join(list(str(new_token.token_number)))
-    response.say(f"You have been assigned to Doctor {doctor.name}. Your token is {token_number_spoken}. An SMS has been sent. Goodbye.")
+    
+    response.say(f"You have been booked with Doctor {doctor.name} for {appointment_time.strftime('%I:%M %p')} today. An SMS has been sent. Goodbye.")
     response.hangup()
     return response
 
 @csrf_exempt
 def ivr_welcome(request):
     response = VoiceResponse()
-    gather = response.gather(num_digits=1, action='/api/ivr/select_clinic/')
-    say_message = "Welcome. Please select a clinic. "
-    clinics = Clinic.objects.all()
-    if not clinics: 
+    states = State.objects.all()
+    if not states:
         response.say("Sorry, no clinics are configured. Goodbye.")
         response.hangup()
-    else:
-        for i, clinic in enumerate(clinics): say_message += f"For {clinic.name}, press {i + 1}. "
+        return HttpResponse(str(response), content_type='text/xml')
+
+    gather = response.gather(num_digits=1, action='/api/ivr/handle-state/')
+    say_message = "Welcome to ClinicFlow AI. Please select a state. "
+    for i, state in enumerate(states):
+        say_message += f"For {state.name}, press {i + 1}. "
+    gather.say(say_message)
+    response.redirect('/api/ivr/welcome/')
+    return HttpResponse(str(response), content_type='text/xml')
+
+@csrf_exempt
+def ivr_handle_state(request):
+    choice = request.POST.get('Digits')
+    response = VoiceResponse()
+    try:
+        state = State.objects.all()[int(choice) - 1]
+        districts = District.objects.filter(state=state)
+        if not districts:
+            response.say(f"Sorry, no districts found for {state.name}. Please try again.")
+            response.redirect('/api/ivr/welcome/')
+            return HttpResponse(str(response), content_type='text/xml')
+
+        gather = response.gather(num_digits=len(str(districts.count())), action=f'/api/ivr/handle-district/{state.id}/')
+        say_message = f"You selected {state.name}. Please select a district. "
+        for i, district in enumerate(districts):
+            say_message += f"For {district.name}, press {i + 1}. "
         gather.say(say_message)
+        response.redirect('/api/ivr/handle-state/')
+    except (ValueError, IndexError):
+        response.say("Invalid choice.")
         response.redirect('/api/ivr/welcome/')
     return HttpResponse(str(response), content_type='text/xml')
 
 @csrf_exempt
-def ivr_select_clinic(request):
+def ivr_handle_district(request, state_id):
     choice = request.POST.get('Digits')
     response = VoiceResponse()
     try:
-        clinic = Clinic.objects.all()[int(choice) - 1]
-        gather = response.gather(num_digits=1, action=f'/api/ivr/handle_booking_type/{clinic.id}/')
-        gather.say(f"You selected {clinic.name}. For next available doctor, press 1. To choose a specific doctor, press 2.")
-        response.redirect(f'/api/ivr/select_clinic/')
-    except (ValueError, IndexError):
-        response.say("Invalid choice.")
+        state = State.objects.get(id=state_id)
+        district = District.objects.filter(state=state)[int(choice) - 1]
+        clinics = Clinic.objects.filter(district=district)
+        if not clinics:
+            response.say(f"Sorry, no clinics found for {district.name}. Please try again.")
+            response.redirect(f'/api/ivr/handle-state/')
+            return HttpResponse(str(response), content_type='text/xml')
+
+        gather = response.gather(num_digits=len(str(clinics.count())), action=f'/api/ivr/handle-clinic/{district.id}/')
+        say_message = f"You selected {district.name}. Please select a clinic. "
+        for i, clinic in enumerate(clinics):
+            say_message += f"For {clinic.name}, press {i + 1}. "
+        gather.say(say_message)
+        response.redirect(f'/api/ivr/handle-district/{state.id}/')
+    except (ValueError, IndexError, State.DoesNotExist):
+        response.say("Invalid choice or error.")
+        response.redirect('/api/ivr/welcome/')
+    return HttpResponse(str(response), content_type='text/xml')
+
+@csrf_exempt
+def ivr_handle_clinic(request, district_id):
+    choice = request.POST.get('Digits')
+    response = VoiceResponse()
+    try:
+        district = District.objects.get(id=district_id)
+        clinic = Clinic.objects.filter(district=district)[int(choice) - 1]
+        gather = response.gather(num_digits=1, action=f'/api/ivr/handle-booking-type/{clinic.id}/')
+        gather.say(f"You selected {clinic.name}. For the next available doctor, press 1. To find a doctor by specialization, press 2.")
+        response.redirect(f'/api/ivr/handle-clinic/{district.id}/')
+    except (ValueError, IndexError, District.DoesNotExist):
+        response.say("Invalid choice or error.")
         response.redirect('/api/ivr/welcome/')
     return HttpResponse(str(response), content_type='text/xml')
 
@@ -529,37 +528,84 @@ def ivr_select_clinic(request):
 def ivr_handle_booking_type(request, clinic_id):
     choice = request.POST.get('Digits')
     response = VoiceResponse()
+    caller_phone_number = request.POST.get('From', 'Unknown')
     try:
         clinic = Clinic.objects.get(id=clinic_id)
         if choice == '1':
-            doctor = Doctor.objects.filter(clinic=clinic).annotate(num_tokens=Count('token', filter=Q(date=timezone.now().date()))).order_by('num_tokens').first()
-            if not doctor: 
-                response.say("Sorry, no doctors are available.")
+            doctors = Doctor.objects.filter(clinic=clinic)
+            best_doctor = None
+            earliest_slot = None
+
+            for doctor in doctors:
+                today_str = timezone.now().date().strftime('%Y-%m-%d')
+                slots_view = AvailableSlotsView()
+                available_slots = slots_view.get(request=None, doctor_id=doctor.id, date=today_str).data
+                if available_slots:
+                    first_slot_time = datetime.strptime(available_slots[0], '%H:%M').time()
+                    if earliest_slot is None or first_slot_time < earliest_slot:
+                        earliest_slot = first_slot_time
+                        best_doctor = doctor
+            
+            if best_doctor:
+                final_response = create_and_speak_token(response, best_doctor, caller_phone_number)
+                return HttpResponse(str(final_response), content_type='text/xml')
+            else:
+                response.say("Sorry, no doctors have available slots today. Please call back later.")
                 response.hangup()
-            else: 
-                create_and_speak_token(response, doctor, request.POST.get('From', 'Unknown'))
+                return HttpResponse(str(response), content_type='text/xml')
+
         elif choice == '2':
-            gather = response.gather(num_digits=1, action=f'/api/ivr/handle_specific_doctor/{clinic.id}/')
-            say_message = "Please select a doctor. "
-            for i, doctor in enumerate(Doctor.objects.filter(clinic=clinic)): 
-                say_message += f"For Doctor {doctor.name}, press {i + 1}. "
+            specializations = Doctor.objects.filter(clinic=clinic).values_list('specialization', flat=True).distinct()
+            if not specializations:
+                response.say("Sorry, no specializations found for this clinic.")
+                response.redirect(f'/api/ivr/handle-clinic/{clinic.district.id}/')
+                return HttpResponse(str(response), content_type='text/xml')
+
+            gather = response.gather(num_digits=len(str(len(specializations))), action=f'/api/ivr/handle-specialization/{clinic.id}/')
+            say_message = "Please select a specialization. "
+            for i, spec in enumerate(specializations):
+                say_message += f"For {spec}, press {i + 1}. "
             gather.say(say_message)
-        else: 
+            response.redirect(f'/api/ivr/handle-booking-type/{clinic.id}/')
+        else:
             response.say("Invalid choice.")
-            response.redirect(f'/api/ivr/handle_booking_type/{clinic_id}/')
-    except Clinic.DoesNotExist: 
-        response.say("Clinic not found.")
-        response.hangup()
+            response.redirect(f'/api/ivr/handle-booking-type/{clinic.id}/')
+    except (Clinic.DoesNotExist, AttributeError):
+        response.say("An error occurred. Please start over.")
+        response.redirect('/api/ivr/welcome/')
     return HttpResponse(str(response), content_type='text/xml')
 
 @csrf_exempt
-def ivr_handle_specific_doctor(request, clinic_id):
+def ivr_handle_specialization(request, clinic_id):
     choice = request.POST.get('Digits')
     response = VoiceResponse()
     try:
-        doctor = Doctor.objects.filter(clinic_id=clinic_id)[int(choice) - 1]
-        create_and_speak_token(response, doctor, request.POST.get('From', 'Unknown'))
+        clinic = Clinic.objects.get(id=clinic_id)
+        specializations = list(Doctor.objects.filter(clinic=clinic).values_list('specialization', flat=True).distinct())
+        spec = specializations[int(choice) - 1]
+
+        doctors = Doctor.objects.filter(clinic=clinic, specialization=spec)
+        gather = response.gather(num_digits=len(str(doctors.count())), action=f'/api/ivr/handle-doctor/{clinic.id}/{spec}/')
+        say_message = f"You selected {spec}. Please select a doctor. "
+        for i, doctor in enumerate(doctors):
+            say_message += f"For Doctor {doctor.name}, press {i + 1}. "
+        gather.say(say_message)
+        response.redirect(f'/api/ivr/handle-specialization/{clinic.id}/')
+    except (ValueError, IndexError, Clinic.DoesNotExist):
+        response.say("Invalid choice or error.")
+        response.redirect(f'/api/ivr/handle-booking-type/{clinic.id}/')
+    return HttpResponse(str(response), content_type='text/xml')
+
+@csrf_exempt
+def ivr_handle_doctor(request, clinic_id, spec):
+    choice = request.POST.get('Digits')
+    response = VoiceResponse()
+    caller_phone_number = request.POST.get('From', 'Unknown')
+    try:
+        doctor = Doctor.objects.filter(clinic_id=clinic_id, specialization=spec)[int(choice) - 1]
+        final_response = create_and_speak_token(response, doctor, caller_phone_number)
+        return HttpResponse(str(final_response), content_type='text/xml')
     except (ValueError, IndexError):
         response.say("Invalid choice.")
-        response.redirect(f'/api/ivr/handle_booking_type/{clinic_id}/')
+        response.redirect(f'/api/ivr/handle-specialization/{clinic.id}/')
     return HttpResponse(str(response), content_type='text/xml')
