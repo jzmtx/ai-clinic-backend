@@ -17,11 +17,12 @@ from .serializers import (
 from django.db.models import Count, Avg, F, Q
 from django.utils import timezone
 from math import radians, sin, cos, sqrt, atan2
-from django.contrib.auth import authenticate
+from django.contrib.auth import authenticate, get_user_model
 from django.views.decorators.csrf import csrf_exempt
 from twilio.twiml.voice_response import VoiceResponse
 from django.http import HttpResponse
 from django.db import transaction
+import random
 
 # --- Core App Imports ---
 from .utils import send_sms_notification
@@ -29,19 +30,59 @@ from .utils import send_sms_notification
 from django_q.tasks import async_task
 from datetime import datetime, timedelta, time
 
+User = get_user_model()
+
 # --- Helper Functions ---
 def haversine_distance(lat1, lon1, lat2, lon2):
-    R = 6371.0
+    R = 6371.0 # Radius of Earth in kilometers
     lat1_rad, lon1_rad, lat2_rad, lon2_rad = map(radians, [lat1, lon1, lat2, lon2])
     dlon, dlat = lon2_rad - lon1_rad, lat2_rad - lat1_rad
     a = sin(dlat / 2)**2 + cos(lat1_rad) * cos(lat2_rad) * sin(dlon / 2)**2
     return R * (2 * atan2(sqrt(a), sqrt(1 - a)))
 
+def generate_otp():
+    return str(random.randint(100000, 999999))
+
+class AvailableSlotsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, doctor_id, date):
+        try:
+            target_date = datetime.strptime(date, '%Y-%m-%d').date()
+        except ValueError:
+            return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        start_time = time(9, 0)
+        end_time = time(17, 0)
+        slot_duration = timedelta(minutes=15)
+
+        all_slots = []
+        current_time = datetime.combine(target_date, start_time)
+        end_datetime = datetime.combine(target_date, end_time)
+        while current_time < end_datetime:
+            all_slots.append(current_time.time())
+            current_time += slot_duration
+
+        booked_tokens = Token.objects.filter(
+            doctor_id=doctor_id,
+            date=target_date,
+            appointment_time__isnull=False
+        ).exclude(status='cancelled')
+        
+        booked_slots = {token.appointment_time for token in booked_tokens}
+
+        available_slots = [slot for slot in all_slots if slot not in booked_slots]
+        
+        formatted_slots = [slot.strftime('%H:%M') for slot in available_slots]
+
+        return Response(formatted_slots, status=status.HTTP_200_OK)
+
+
 # --- Public & Private Views ---
 class PublicClinicListView(generics.ListAPIView):
     queryset = Clinic.objects.prefetch_related('doctors').all()
     serializer_class = ClinicWithDoctorsSerializer
-    permission_classes = [permissions.AllowAny] # Explicitly public
+    permission_classes = [permissions.AllowAny]
 
 class ClinicAnalyticsView(APIView):
     permission_classes = [IsAuthenticated]
@@ -73,39 +114,138 @@ class ClinicAnalyticsView(APIView):
 
 class PatientRegisterView(generics.CreateAPIView):
     serializer_class = PatientRegisterSerializer
-    permission_classes = [permissions.AllowAny] # Explicitly public
+    permission_classes = [permissions.AllowAny]
+
     def post(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-            token, _ = AuthToken.objects.get_or_create(user=user)
-            patient = user.patient
-            if patient.phone_number:
-                message = f"Welcome to the Clinic Portal, {patient.name}! Your registration was successful."
-                send_sms_notification(patient.phone_number, message)
-            
-            user_data = { 'username': user.username, 'name': patient.name, 'age': patient.age, 'role': 'patient', 'phone_number': patient.phone_number }
-            return Response({"message": "Patient registered successfully.", "token": token.key, "user": user_data}, status=status.HTTP_201_CREATED)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        # Create user but set as inactive until OTP verification
+        user = serializer.save()
+        user.is_active = False 
+        user.save()
+
+        patient = user.patient
+        
+        # Generate and save OTP
+        otp = generate_otp()
+        otp_expiry = timezone.now() + timedelta(minutes=10)
+        patient.otp = otp
+        patient.otp_expiry = otp_expiry
+        patient.save()
+
+        # Send OTP via SMS
+        if patient.phone_number:
+            message = f"Your ClinicFlow AI verification code is: {otp}. It is valid for 10 minutes."
+            send_sms_notification(patient.phone_number, message)
+        
+        return Response({
+            "message": "Registration successful. Please check your phone for a verification code.",
+            "phone_number": patient.phone_number # Send phone number back to frontend
+        }, status=status.HTTP_201_CREATED)
+
+class VerifyOTPView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        phone_number = request.data.get('phone_number')
+        otp = request.data.get('otp')
+
+        if not phone_number or not otp:
+            return Response({'error': 'Phone number and OTP are required.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            patient = Patient.objects.get(phone_number=phone_number)
+        except Patient.DoesNotExist:
+            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+        
+        if patient.otp != otp:
+            return Response({'error': 'Invalid OTP code.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        if timezone.now() > patient.otp_expiry:
+            return Response({'error': 'OTP has expired. Please request a new one.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Verification successful
+        user = patient.user
+        user.is_active = True
+        user.save()
+
+        patient.is_phone_verified = True
+        patient.otp = None
+        patient.otp_expiry = None
+        patient.save()
+
+        # Log the user in by returning a token
+        token, _ = AuthToken.objects.get_or_create(user=user)
+        patient_data = PatientSerializer(patient).data
+        user_data = { 'token': token.key, 'user': {**patient_data, 'role': 'patient'} }
+
+        return Response(user_data, status=status.HTTP_200_OK)
+
+class ResendOTPView(APIView):
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request, *args, **kwargs):
+        phone_number = request.data.get('phone_number')
+        if not phone_number:
+            return Response({'error': 'Phone number is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            patient = Patient.objects.get(phone_number=phone_number)
+        except Patient.DoesNotExist:
+            return Response({'error': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        # Generate and save a new OTP
+        otp = generate_otp()
+        otp_expiry = timezone.now() + timedelta(minutes=10)
+        patient.otp = otp
+        patient.otp_expiry = otp_expiry
+        patient.save()
+
+        # Re-send OTP via SMS
+        message = f"Your new ClinicFlow AI verification code is: {otp}. It is valid for 10 minutes."
+        send_sms_notification(patient.phone_number, message)
+        
+        return Response({'message': 'A new verification code has been sent.'}, status=status.HTTP_200_OK)
+
 
 class ConfirmArrivalView(APIView):
     permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
         user = request.user
         user_lat, user_lon = request.data.get('latitude'), request.data.get('longitude')
-        if not all([user_lat, user_lon]): return Response({'error': 'Latitude and longitude are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not all([user_lat, user_lon]): return Response({'error': 'Location data is required.'}, status=status.HTTP_400_BAD_REQUEST)
         if not hasattr(user, 'patient'): return Response({'error': 'No patient profile found.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            token = Token.objects.filter(patient=user.patient, date=timezone.now().date(), status='waiting').latest('created_at')
+            token = Token.objects.get(patient=user.patient, date=timezone.now().date(), status='waiting')
+            
+            if token.appointment_time:
+                now = timezone.now()
+                appointment_datetime = timezone.make_aware(datetime.combine(token.date, token.appointment_time))
+                
+                start_window = appointment_datetime - timedelta(minutes=20)
+                end_window = appointment_datetime + timedelta(minutes=15)
+
+                if not (start_window <= now <= end_window):
+                    start_window_str = start_window.strftime('%I:%M %p')
+                    return Response({
+                        'error': f"You can only confirm arrival between {start_window_str} and the end of your appointment."
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
             clinic = token.clinic
-            if not all([clinic.latitude, clinic.longitude]): return Response({'error': 'Clinic location not configured.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            if not all([clinic.latitude, clinic.longitude]): return Response({'error': 'Clinic location has not been configured by the admin.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
             distance = haversine_distance(float(user_lat), float(user_lon), clinic.latitude, clinic.longitude)
+            token.distance_km = round(distance, 2)
             if distance > 1.0:
-                return Response({'error': f'You are approximately {distance:.2f} km away. You must be within 1.0 km of the clinic to confirm.'}, status=status.HTTP_400_BAD_REQUEST)
+                token.save()
+                return Response({'error': f'You are approximately {distance:.1f} km away. You must be within 1 km to confirm your arrival.'}, status=status.HTTP_400_BAD_REQUEST)
+            
             token.status = 'confirmed'
             token.save()
-            return Response({"message": "Arrival confirmed successfully.", "token": TokenSerializer(token).data}, status=status.HTTP_200_OK)
-        except Token.DoesNotExist: return Response({'error': 'No active token found to confirm.'}, status=status.HTTP_404_NOT_FOUND)
+            return Response({"message": "Arrival confirmed successfully!", "token": TokenSerializer(token).data}, status=status.HTTP_200_OK)
+        except Token.DoesNotExist: return Response({'error': 'No active appointment found to confirm.'}, status=status.HTTP_404_NOT_FOUND)
+        except Token.MultipleObjectsReturned: return Response({'error': 'Multiple active appointments found. Please contact reception.'}, status=status.HTTP_400_BAD_REQUEST)
 
 class PatientCancelTokenView(APIView):
     permission_classes = [IsAuthenticated]
@@ -138,43 +278,66 @@ class ClinicWithDoctorsListView(generics.ListAPIView):
 class PatientCreateTokenView(APIView):
     permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
-        user, doctor_id = request.user, request.data.get('doctor_id')
-        if not hasattr(user, 'patient'): return Response({'error': 'Only patients can create tokens.'}, status=status.HTTP_403_FORBIDDEN)
-        if not doctor_id: return Response({'error': 'Doctor ID is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        user = request.user
+        doctor_id, appointment_date_str, appointment_time_str = request.data.get('doctor_id'), request.data.get('date'), request.data.get('time')
+        if not all([doctor_id, appointment_date_str, appointment_time_str]): return Response({'error': 'Doctor, date, and time slot are required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if not hasattr(user, 'patient'): return Response({'error': 'Only patients can create appointments.'}, status=status.HTTP_403_FORBIDDEN)
         try:
+            appointment_date = datetime.strptime(appointment_date_str, '%Y-%m-%d').date()
+            appointment_time = datetime.strptime(appointment_time_str, '%H:%M').time()
             doctor = Doctor.objects.get(id=doctor_id)
-            if Token.objects.filter(patient=user.patient, date=timezone.now().date()).exclude(status__in=['completed', 'cancelled']).exists():
-                return Response({'error': 'You already have an active token for today.'}, status=status.HTTP_400_BAD_REQUEST)
-            new_token = Token.objects.create(patient=user.patient, doctor=doctor)
-            if user.patient.phone_number:
-                message = f"Dear {user.patient.name}, your token {new_token.token_number} for Dr. {doctor.name} at {doctor.clinic.name} has been confirmed."
-                send_sms_notification(user.patient.phone_number, message)
-            return Response(TokenSerializer(new_token).data, status=status.HTTP_201_CREATED)
-        except Doctor.DoesNotExist: return Response({'error': 'Doctor not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except (ValueError, Doctor.DoesNotExist): return Response({'error': 'Invalid data provided.'}, status=status.HTTP_400_BAD_REQUEST)
+        if Token.objects.filter(patient=user.patient, date=appointment_date).exclude(status__in=['completed', 'cancelled']).exists(): return Response({'error': 'You already have an active appointment for this day.'}, status=status.HTTP_400_BAD_REQUEST)
+        new_appointment = Token.objects.create(patient=user.patient, doctor=doctor, clinic=doctor.clinic, date=appointment_date, appointment_time=appointment_time, status='waiting')
+        if user.patient.phone_number:
+            message = (f"Hi {user.patient.name}, your appointment with Dr. {doctor.name} is confirmed for " f"{appointment_date.strftime('%d-%m-%Y')} at {appointment_time.strftime('%I:%M %p')}.")
+            send_sms_notification(user.patient.phone_number, message)
+        return Response(TokenSerializer(new_appointment).data, status=status.HTTP_201_CREATED)
 
 class TokenListCreate(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TokenSerializer
     def get_queryset(self):
         user = self.request.user
-        clinic = None
-        if hasattr(user, 'doctor'): clinic = user.doctor.clinic
-        elif hasattr(user, 'receptionist'): clinic = user.receptionist.clinic
-        if clinic:
-            return Token.objects.filter(clinic=clinic, date=timezone.now().date(), status__in=['waiting', 'confirmed']).order_by('created_at')
+        today = timezone.now().date()
+        if hasattr(user, 'doctor'): return Token.objects.filter(doctor=user.doctor, date=today).exclude(status__in=['completed', 'cancelled']).order_by('created_at')
+        elif hasattr(user, 'receptionist'): return Token.objects.filter(clinic=user.receptionist.clinic, date=today).exclude(status__in=['completed', 'cancelled']).order_by('created_at')
         return Token.objects.none()
-
     def post(self, request, *args, **kwargs):
-        patient_name, patient_age, phone_number, doctor_id = request.data.get('patient_name'), request.data.get('patient_age'), request.data.get('phone_number'), request.data.get('assigned_doctor')
-        if not all([patient_name, patient_age, phone_number, doctor_id]): return Response({'error': 'Missing required fields'}, status=status.HTTP_400_BAD_REQUEST)
+        patient_name = request.data.get('patient_name')
+        patient_age = request.data.get('patient_age')
+        phone_number = request.data.get('phone_number')
+        doctor_id = request.data.get('assigned_doctor')
+        appointment_time_str = request.data.get('appointment_time')
+        if not all([patient_name, patient_age, phone_number, doctor_id]):
+            return Response({'error': 'Missing required fields'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            doctor = Doctor.objects.get(id=doctor_id)
+            receptionist = request.user.receptionist
+            doctor = Doctor.objects.get(id=doctor_id, clinic=receptionist.clinic)
             patient, _ = Patient.objects.get_or_create(phone_number=phone_number, defaults={'name': patient_name, 'age': patient_age})
-            new_token = Token.objects.create(patient=patient, doctor=doctor)
-            message = f"Dear {patient.name}, your token {new_token.token_number} for Dr. {doctor.name} at {doctor.clinic.name} has been confirmed."
+            appointment_time = None
+            if appointment_time_str:
+                try:
+                    appointment_time = datetime.strptime(appointment_time_str, '%H:%M').time()
+                except ValueError:
+                    return Response({'error': 'Invalid time format. Use HH:MM.'}, status=status.HTTP_400_BAD_REQUEST)
+            token_status = 'waiting' if appointment_time else 'confirmed'
+            new_token = Token.objects.create(
+                patient=patient, doctor=doctor, clinic=doctor.clinic,
+                appointment_time=appointment_time, status=token_status
+            )
+            new_token.refresh_from_db()
+            message = f"Dear {patient.name}, your token for Dr. {doctor.name} has been confirmed."
+            if new_token.appointment_time:
+                 message += f" Your appointment is at {new_token.appointment_time.strftime('%I:%M %p')}."
+            if new_token.token_number:
+                message += f" Your token number is {new_token.token_number}."
             send_sms_notification(patient.phone_number, message)
             return Response(TokenSerializer(new_token).data, status=status.HTTP_201_CREATED)
-        except Doctor.DoesNotExist: return Response({'error': 'Doctor not found'}, status=status.HTTP_404_NOT_FOUND)
+        except Doctor.DoesNotExist:
+            return Response({'error': 'Doctor not found in your clinic'}, status=status.HTTP_404_NOT_FOUND)
+        except Receptionist.DoesNotExist:
+            return Response({'error': 'Only receptionists can create tokens.'}, status=status.HTTP_403_FORBIDDEN)
 
 class DoctorList(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
@@ -184,45 +347,50 @@ class DoctorList(generics.ListAPIView):
         clinic = None
         if hasattr(user, 'doctor'): clinic = user.doctor.clinic
         elif hasattr(user, 'receptionist'): clinic = user.receptionist.clinic
-        if clinic:
-            return Doctor.objects.filter(clinic=clinic)
+        if clinic: return Doctor.objects.filter(clinic=clinic)
         return Doctor.objects.none()
 
 class LoginView(APIView):
-    permission_classes = [permissions.AllowAny] # <-- THE FIX IS HERE
+    permission_classes = [permissions.AllowAny]
     def post(self, request, format=None):
         username, password = request.data.get('username'), request.data.get('password')
         user = authenticate(request, username=username, password=password)
-        if user:
+        if user is not None and user.is_active and hasattr(user, 'patient'):
             token, _ = AuthToken.objects.get_or_create(user=user)
-            user_data = {'token': token.key}
-            role, profile_data = None, None
-            
-            if hasattr(user, 'doctor'): 
-                role, profile_data = 'doctor', DoctorSerializer(user.doctor).data
+            patient_data = PatientSerializer(user.patient).data
+            user_data = { 'token': token.key, 'user': {**patient_data, 'role': 'patient'} }
+            return Response(user_data, status=status.HTTP_200_OK)
+        if user is not None and not user.is_active and hasattr(user, 'patient'):
+             return Response({'error': 'Account not verified. Please check your SMS for a verification code.'}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({'error': 'Invalid Credentials or not a patient.'}, status=status.HTTP_400_BAD_REQUEST)
+
+class StaffLoginView(APIView):
+    permission_classes = [permissions.AllowAny]
+    def post(self, request, *args, **kwargs):
+        username = request.data.get('username')
+        password = request.data.get('password')
+        user = authenticate(username=username, password=password)
+        if user is not None and user.is_staff:
+            token, created = AuthToken.objects.get_or_create(user=user)
+            role, profile_data, clinic_data = 'unknown', {'username': user.username}, None
+            if hasattr(user, 'doctor'):
+                role = 'doctor'
+                profile_data['name'] = user.doctor.name
+                if user.doctor.clinic: clinic_data = {'id': user.doctor.clinic.id, 'name': user.doctor.clinic.name}
             elif hasattr(user, 'receptionist'):
                 role = 'receptionist'
-                clinic = user.receptionist.clinic
-                profile_data = {'username': user.username, 'clinic': {'id': clinic.id, 'name': clinic.name} if clinic else None}
-            elif hasattr(user, 'patient'): 
-                role = 'patient'
-                patient = user.patient
-                profile_data = PatientSerializer(patient).data
-            
-            if role: 
-                user_data['user'] = {**profile_data, 'role': role}
-                return Response(user_data)
-            
-            return Response({'error': 'User profile not found'}, status=status.HTTP_404_NOT_FOUND)
-        return Response({'error': 'Invalid Credentials'}, status=status.HTTP_400_BAD_REQUEST)
+                profile_data['name'] = user.get_full_name() or user.username
+                if user.receptionist.clinic: clinic_data = {'id': user.receptionist.clinic.id, 'name': user.receptionist.clinic.name}
+            response_data = {'token': token.key, 'user': {**profile_data, 'role': role, 'clinic': clinic_data}}
+            return Response(response_data, status=status.HTTP_200_OK)
+        return Response({'error': 'Invalid Credentials or not a staff member.'}, status=status.HTTP_400_BAD_REQUEST)
 
 class MyHistoryView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = ConsultationSerializer
     def get_queryset(self):
         user = self.request.user
-        if hasattr(user, 'patient'):
-            return Consultation.objects.filter(patient=user.patient).order_by('-date')
+        if hasattr(user, 'patient'): return Consultation.objects.filter(patient=user.patient).order_by('-date')
         return Consultation.objects.none()
 
 class PatientHistoryView(generics.ListAPIView):
@@ -238,98 +406,71 @@ class PatientLiveQueueView(generics.ListAPIView):
         doctor_id = self.kwargs['doctor_id']
         today = timezone.now().date()
         active_statuses = ['waiting', 'confirmed', 'in_consultancy']
-        return Token.objects.filter(
-            doctor_id=doctor_id,
-            date=today,
-            status__in=active_statuses
-        ).order_by('token_number')
+        return Token.objects.filter(doctor_id=doctor_id, date=today, status__in=active_statuses).order_by('token_number')
 
 class ConsultationCreateView(APIView):
     permission_classes = [IsAuthenticated]
     def post(self, request, *args, **kwargs):
         data = request.data
-        patient_id = data.get('patient')
-        notes = data.get('notes')
+        patient_id, notes = data.get('patient'), data.get('notes')
         prescription_items_data = data.get('prescription_items', [])
-
-        if not patient_id or not notes:
-            return Response({'error': 'Patient and notes are required.'}, status=status.HTTP_400_BAD_REQUEST)
-
+        if not patient_id or not notes: return Response({'error': 'Patient and notes are required.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             patient = Patient.objects.get(id=patient_id)
             doctor = request.user.doctor
-
             new_prescription_items = []
             with transaction.atomic():
                 consultation = Consultation.objects.create(patient=patient, doctor=doctor, notes=notes)
-                
                 for item_data in prescription_items_data:
                     item = PrescriptionItem.objects.create(consultation=consultation, **item_data)
                     new_prescription_items.append(item)
-                
                 try:
                     token = Token.objects.filter(patient=patient, date=timezone.now().date(), status__in=['waiting', 'confirmed', 'in_consultancy']).latest('created_at')
                     if token:
                         token.status = 'completed'
+                        token.completed_at = timezone.now()
                         token.save()
-                except Token.DoesNotExist:
-                    pass
-
+                except Token.DoesNotExist: pass
                 if patient.phone_number and new_prescription_items:
-                    MORNING_DOSE_TIME = time(8, 0)
-                    AFTERNOON_DOSE_TIME = time(13, 0)
-                    EVENING_DOSE_TIME = time(20, 0)
-                    
+                    MORNING_DOSE_TIME, AFTERNOON_DOSE_TIME, EVENING_DOSE_TIME = time(8, 0), time(13, 0), time(20, 0)
                     today = timezone.now().date()
-
                     for item in new_prescription_items:
                         for day in range(1, int(item.duration_days) + 1):
                             reminder_date = today + timedelta(days=day)
-                            
                             if item.timing_morning:
                                 schedule_datetime = datetime.combine(reminder_date, MORNING_DOSE_TIME)
                                 message = f"Hi {patient.name}, it's time for your morning dose of {item.medicine_name}."
                                 async_task('api.tasks.send_prescription_reminder_sms', patient.phone_number, message, schedule=schedule_datetime)
-
                             if item.timing_afternoon:
                                 schedule_datetime = datetime.combine(reminder_date, AFTERNOON_DOSE_TIME)
                                 message = f"Hi {patient.name}, it's time for your afternoon dose of {item.medicine_name}."
                                 async_task('api.tasks.send_prescription_reminder_sms', patient.phone_number, message, schedule=schedule_datetime)
-
                             if item.timing_evening:
                                 schedule_datetime = datetime.combine(reminder_date, EVENING_DOSE_TIME)
                                 message = f"Hi {patient.name}, it's time for your evening dose of {item.medicine_name}."
                                 async_task('api.tasks.send_prescription_reminder_sms', patient.phone_number, message, schedule=schedule_datetime)
-            
             serializer = ConsultationSerializer(consultation)
             return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-        except Patient.DoesNotExist:
-            return Response({'error': 'Patient not found.'}, status=status.HTTP_404_NOT_FOUND)
-        except Doctor.DoesNotExist:
-            return Response({'error': 'Logged-in user is not a doctor.'}, status=status.HTTP_403_FORBIDDEN)
-        except Exception as e:
-            return Response({'error': f'An unexpected error occurred: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Patient.DoesNotExist: return Response({'error': 'Patient not found.'}, status=status.HTTP_404_NOT_FOUND)
+        except Doctor.DoesNotExist: return Response({'error': 'Logged-in user is not a doctor.'}, status=status.HTTP_403_FORBIDDEN)
+        except Exception as e: return Response({'error': f'An unexpected error occurred: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 class TokenUpdateStatusView(generics.UpdateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = TokenSerializer
     lookup_field = 'id'
-    
     def get_queryset(self):
         user = self.request.user
         clinic = None
         if hasattr(user, 'doctor'): clinic = user.doctor.clinic
         elif hasattr(user, 'receptionist'): clinic = user.receptionist.clinic
-        if clinic:
-            return Token.objects.filter(clinic=clinic, date=timezone.now().date())
+        if clinic: return Token.objects.filter(clinic=clinic, date=timezone.now().date())
         return Token.objects.none()
-
     def patch(self, request, *args, **kwargs):
         instance = self.get_object()
         new_status = request.data.get('status')
-        if new_status not in ['confirmed', 'completed', 'skipped', 'cancelled', 'in_consultancy']:
-            return Response({'error': 'Invalid or not allowed status update.'}, status=status.HTTP_400_BAD_REQUEST)
+        if new_status not in ['confirmed', 'completed', 'skipped', 'cancelled', 'in_consultancy']: return Response({'error': 'Invalid or not allowed status update.'}, status=status.HTTP_400_BAD_REQUEST)
+        if new_status == 'completed': instance.completed_at = timezone.now()
         instance.status = new_status
         instance.save()
         return Response(TokenSerializer(instance).data)
@@ -340,16 +481,16 @@ class TokenUpdateStatusView(generics.UpdateAPIView):
 def create_and_speak_token(response, doctor, caller_phone_number, age=0):
     patient_name = f"IVR Patient {caller_phone_number[-4:]}"
     patient, _ = Patient.objects.get_or_create(phone_number=caller_phone_number, defaults={'name': patient_name, 'age': age})
-    
     if Token.objects.filter(patient=patient, date=timezone.now().date()).exclude(status__in=['completed', 'cancelled']).exists():
         response.say(f"You already have an active token for today. Please check your SMS. Goodbye.")
         response.hangup()
         return response
-
-    new_token = Token.objects.create(patient=patient, doctor=doctor)
+    with transaction.atomic():
+        last_token = Token.objects.filter(clinic=doctor.clinic, date=timezone.now().date(), token_number__isnull=False).order_by('-token_number').first()
+        next_token_number = (last_token.token_number + 1) if last_token else 1
+        new_token = Token.objects.create(patient=patient, doctor=doctor, clinic=doctor.clinic, token_number=next_token_number, status='confirmed')
     message = f"Your token for Dr. {doctor.name} at {doctor.clinic.name} is {new_token.token_number}."
     send_sms_notification(patient.phone_number, message)
-    
     token_number_spoken = " ".join(list(str(new_token.token_number)))
     response.say(f"You have been assigned to Doctor {doctor.name}. Your token is {token_number_spoken}. An SMS has been sent. Goodbye.")
     response.hangup()

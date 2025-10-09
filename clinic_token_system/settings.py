@@ -7,7 +7,6 @@ SECRET_KEY = 'django-insecure-=+c$c$j4z!0d9v$j1w!5a)0i=d!o(l!&!1v(l3x(e&n&n7z_d3
 
 DEBUG = True
 
-# --- UPDATED FOR NGROK ---
 ALLOWED_HOSTS = ['9ca573279699.ngrok-free.app', '127.0.0.1', 'localhost']
 
 INSTALLED_APPS = [
@@ -17,6 +16,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'django_q',  # <-- ADDED FOR THE NEW WORKER
     'rest_framework',
     'rest_framework.authtoken',
     'corsheaders',
@@ -90,3 +90,16 @@ CORS_ALLOW_CREDENTIALS = True
 TWILIO_ACCOUNT_SID = 'AC42134a8b01e3a1b89db87d2e30b58acc'
 TWILIO_AUTH_TOKEN = 'fd010d35f326b6ee646dd81ff4c29153'
 TWILIO_PHONE_NUMBER = '+12154340068'
+
+# ====================================================================
+# DJANGO-Q SETTINGS
+# ====================================================================
+Q_CLUSTER = {
+    'name': 'clinic-q-local',
+    'workers': 4,
+    'timeout': 90,
+    'retry': 120,
+    'queue_limit': 50,
+    'catch_up': False,
+    'redis': 'redis://localhost:6379/0' # For local development
+}
