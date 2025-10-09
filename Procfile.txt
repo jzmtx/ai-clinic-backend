@@ -1,1 +1,0 @@
-web: gunicorn clinic_token_system.wsgi --log-file -

@@ -1,17 +1,14 @@
 import os
 from pathlib import Path
-import dj_database_url
-import ssl
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-local-default-key')
-DEBUG = os.environ.get('DJANGO_DEBUG', '') != 'False'
+SECRET_KEY = 'django-insecure-=+c$c$j4z!0d9v$j1w!5a)0i=d!o(l!&!1v(l3x(e&n&n7z_d3'
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
-RENDER_EXTERNAL_HOSTNAME = os.environ.get('RENDER_EXTERNAL_HOSTNAME')
-if RENDER_EXTERNAL_HOSTNAME:
-    ALLOWED_HOSTS.append(RENDER_EXTERNAL_HOSTNAME)
+DEBUG = True
+
+# --- UPDATED FOR NGROK ---
+ALLOWED_HOSTS = ['9ca573279699.ngrok-free.app', '127.0.0.1', 'localhost']
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -19,9 +16,7 @@ INSTALLED_APPS = [
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
-    'whitenoise.runserver_nostatic',
     'django.contrib.staticfiles',
-    'django_q', 
     'rest_framework',
     'rest_framework.authtoken',
     'corsheaders',
@@ -30,7 +25,6 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    'whitenoise.middleware.WhiteNoiseMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -61,9 +55,10 @@ TEMPLATES = [
 WSGI_APPLICATION = 'clinic_token_system.wsgi.application'
 
 DATABASES = {
-    'default': dj_database_url.config(
-        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}"
-    )
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
+    }
 }
 
 AUTH_PASSWORD_VALIDATORS = [
@@ -85,32 +80,13 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = 'static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
-STATICFILES_STORAGE = 'whitenoise.storage.CompressedManifestStaticFilesStorage'
-
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-
-# --- FINAL CORS SETTINGS ---
-CORS_ALLOWED_ORIGINS_STRING = os.environ.get('CORS_ALLOWED_ORIGINS', 'http://localhost:3000')
-CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS_STRING.split(',')]
-
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+]
 CORS_ALLOW_CREDENTIALS = True
 
-
-TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID')
-TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN')
-TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER')
-
-# ====================================================================
-# DJANGO-Q SETTINGS
-# ====================================================================
-Q_CLUSTER = {
-    'name': 'clinic-q',
-    'workers': 2,
-    'timeout': 90,
-    'retry': 120,
-    'queue_limit': 50,
-    'catch_up': False,
-    'redis': os.environ.get('REDIS_URL')
-}
+TWILIO_ACCOUNT_SID = 'AC42134a8b01e3a1b89db87d2e30b58acc'
+TWILIO_AUTH_TOKEN = 'fd010d35f326b6ee646dd81ff4c29153'
+TWILIO_PHONE_NUMBER = '+12154340068'
