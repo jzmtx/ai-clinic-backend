@@ -47,7 +47,6 @@ class Patient(models.Model):
     name = models.CharField(max_length=100)
     age = models.IntegerField()
     phone_number = models.CharField(max_length=15, null=True, blank=True)
-    # OTP fields have been removed
 
     def __str__(self):
         return self.name
@@ -59,13 +58,17 @@ class Token(models.Model):
     ]
     patient = models.ForeignKey(Patient, on_delete=models.CASCADE)
     doctor = models.ForeignKey(Doctor, on_delete=models.CASCADE)
-    token_number = models.IntegerField(blank=True, null=True)
+    
+    # --- THIS LINE HAS BEEN CHANGED ---
+    token_number = models.CharField(max_length=20, blank=True, null=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     date = models.DateField(default=timezone.now)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='waiting')
     clinic = models.ForeignKey(Clinic, on_delete=models.CASCADE, related_name='tokens', null=True, blank=True)
     appointment_time = models.TimeField(null=True, blank=True)
+    distance_km = models.FloatField(null=True, blank=True) # Added from a previous step
 
     class Meta:
         unique_together = [
@@ -82,10 +85,15 @@ class Token(models.Model):
         if self.doctor and not self.clinic:
             self.clinic = self.doctor.clinic
         
-        if not self.pk and not self.appointment_time:
+        if not self.pk and not self.appointment_time and self.token_number is None:
             last_token = Token.objects.filter(clinic=self.clinic, date=self.date, appointment_time__isnull=True).order_by('-token_number').first()
-            self.token_number = (last_token.token_number + 1) if last_token else 1
             
+            # This part needs to handle numeric conversion if the old format was just numbers
+            last_token_num = 0
+            if last_token and last_token.token_number and last_token.token_number.isdigit():
+                last_token_num = int(last_token.token_number)
+            self.token_number = str(last_token_num + 1)
+
         if self.status == 'completed' and self.completed_at is None:
             self.completed_at = timezone.now()
             

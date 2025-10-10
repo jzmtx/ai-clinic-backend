@@ -40,38 +40,47 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     a = sin(dlat / 2)**2 + cos(lat1_rad) * cos(lat2_rad) * sin(dlon / 2)**2
     return R * (2 * atan2(sqrt(a), sqrt(1 - a)))
 
+# --- NEW HELPER FUNCTION TO GET SLOTS ---
+# This logic is moved from AvailableSlotsView to be reusable
+def _get_available_slots_for_doctor(doctor_id, date_str):
+    try:
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return None # Return None on bad date format
+
+    start_time = time(9, 0)
+    end_time = time(17, 0)
+    slot_duration = timedelta(minutes=15)
+
+    all_slots = []
+    current_time = datetime.combine(target_date, start_time)
+    end_datetime = datetime.combine(target_date, end_time)
+    while current_time < end_datetime:
+        all_slots.append(current_time.time())
+        current_time += slot_duration
+
+    booked_tokens = Token.objects.filter(
+        doctor_id=doctor_id,
+        date=target_date,
+        appointment_time__isnull=False
+    ).exclude(status='cancelled')
+    
+    booked_slots = {token.appointment_time for token in booked_tokens}
+
+    available_slots = [slot for slot in all_slots if slot not in booked_slots]
+    
+    return [slot.strftime('%H:%M') for slot in available_slots]
+
+
+# --- MODIFIED VIEW ---
 class AvailableSlotsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, doctor_id, date):
-        try:
-            target_date = datetime.strptime(date, '%Y-%m-%d').date()
-        except ValueError:
+        # This view now calls the reusable helper function
+        formatted_slots = _get_available_slots_for_doctor(doctor_id, date)
+        if formatted_slots is None:
             return Response({'error': 'Invalid date format. Use YYYY-MM-DD.'}, status=status.HTTP_400_BAD_REQUEST)
-
-        start_time = time(9, 0)
-        end_time = time(17, 0)
-        slot_duration = timedelta(minutes=15)
-
-        all_slots = []
-        current_time = datetime.combine(target_date, start_time)
-        end_datetime = datetime.combine(target_date, end_time)
-        while current_time < end_datetime:
-            all_slots.append(current_time.time())
-            current_time += slot_duration
-
-        booked_tokens = Token.objects.filter(
-            doctor_id=doctor_id,
-            date=target_date,
-            appointment_time__isnull=False
-        ).exclude(status='cancelled')
-        
-        booked_slots = {token.appointment_time for token in booked_tokens}
-
-        available_slots = [slot for slot in all_slots if slot not in booked_slots]
-        
-        formatted_slots = [slot.strftime('%H:%M') for slot in available_slots]
-
         return Response(formatted_slots, status=status.HTTP_200_OK)
 
 
@@ -322,7 +331,7 @@ class PatientHistoryView(generics.ListAPIView):
 
 class PatientLiveQueueView(generics.ListAPIView):
     serializer_class = AnonymizedTokenSerializer
-    permission_classes = [permissions.AllowAny] # <--- THIS IS THE FIX
+    permission_classes = [permissions.AllowAny]
     def get_queryset(self):
         doctor_id = self.kwargs['doctor_id']
         today = timezone.now().date()
@@ -397,39 +406,65 @@ class TokenUpdateStatusView(generics.UpdateAPIView):
         return Response(TokenSerializer(instance).data)
 
 # ====================================================================
-# --- ADVANCED IVR LOGIC ---
+# --- ADVANCED IVR LOGIC (WITH NEW TOKEN NUMBER LOGIC) ---
 # ====================================================================
-# ... (IVR code remains unchanged)
+
+# --- MODIFIED FUNCTION ---
 def create_and_speak_token(response, doctor, caller_phone_number):
     patient_name = f"IVR Patient {caller_phone_number[-4:]}"
     patient, _ = Patient.objects.get_or_create(phone_number=caller_phone_number, defaults={'name': patient_name, 'age': 0})
-    if Token.objects.filter(patient=patient, date=timezone.now().date()).exclude(status__in=['completed', 'cancelled']).exists():
+    
+    today = timezone.now().date()
+
+    if Token.objects.filter(patient=patient, date=today).exclude(status__in=['completed', 'cancelled']).exists():
         response.say("You already have an active appointment for today. Please check your SMS. Goodbye.")
         response.hangup()
         return response
-    today_str = timezone.now().date().strftime('%Y-%m-%d')
-    slots_view = AvailableSlotsView()
-    available_slots = slots_view.get(request=None, doctor_id=doctor.id, date=today_str).data
+
+    today_str = today.strftime('%Y-%m-%d')
+    # This now calls the helper function directly, bypassing permission checks
+    available_slots = _get_available_slots_for_doctor(doctor.id, today_str)
+    
     if not available_slots:
         response.say(f"Sorry, Dr. {doctor.name} has no available slots for today.")
         response.hangup()
         return response
+
     first_slot_str = available_slots[0]
     appointment_time = datetime.strptime(first_slot_str, '%H:%M').time()
+    
+    start_time = time(9, 0)
+    slot_duration_minutes = 15
+    appointment_datetime = datetime.combine(today, appointment_time)
+    start_datetime = datetime.combine(today, start_time)
+    delta_minutes = (appointment_datetime - start_datetime).total_seconds() / 60
+    slot_number = int(delta_minutes // slot_duration_minutes) + 1
+    
+    doctor_initial = doctor.name[0].upper() if doctor.name else "X"
+    formatted_token_number = f"{doctor_initial}-{slot_number}"
+
     new_appointment = Token.objects.create(
         patient=patient, 
         doctor=doctor, 
         clinic=doctor.clinic, 
-        date=timezone.now().date(), 
+        date=today, 
         appointment_time=appointment_time, 
+        token_number=formatted_token_number,
         status='waiting'
     )
+    
     message = (f"Your appointment with Dr. {doctor.name} at {doctor.clinic.name} "
-               f"is confirmed for {appointment_time.strftime('%I:%M %p')} today.")
+               f"is confirmed for {appointment_time.strftime('%I:%M %p')} today. "
+               f"Your token number is {formatted_token_number}.")
     send_sms_notification(patient.phone_number, message)
-    response.say(f"You have been booked with Doctor {doctor.name} for {appointment_time.strftime('%I:%M %p')} today. An SMS has been sent. Goodbye.")
+    
+    response.say(f"You have been booked with Doctor {doctor.name} for {appointment_time.strftime('%I:%M %p')} today. "
+               f"Your token number is {formatted_token_number}. An SMS has been sent. Goodbye.")
     response.hangup()
     return response
+
+# ... (The rest of the IVR functions remain unchanged) ...
+
 @csrf_exempt
 def ivr_welcome(request):
     response = VoiceResponse()
@@ -438,6 +473,7 @@ def ivr_welcome(request):
         response.say("Sorry, no clinics are configured. Goodbye.")
         response.hangup()
         return HttpResponse(str(response), content_type='text/xml')
+
     gather = response.gather(num_digits=1, action='/api/ivr/handle-state/')
     say_message = "Welcome to ClinicFlow AI. Please select a state. "
     for i, state in enumerate(states):
@@ -445,6 +481,7 @@ def ivr_welcome(request):
     gather.say(say_message)
     response.redirect('/api/ivr/welcome/')
     return HttpResponse(str(response), content_type='text/xml')
+
 @csrf_exempt
 def ivr_handle_state(request):
     choice = request.POST.get('Digits')
@@ -456,6 +493,7 @@ def ivr_handle_state(request):
             response.say(f"Sorry, no districts found for {state.name}. Please try again.")
             response.redirect('/api/ivr/welcome/')
             return HttpResponse(str(response), content_type='text/xml')
+
         gather = response.gather(num_digits=len(str(districts.count())), action=f'/api/ivr/handle-district/{state.id}/')
         say_message = f"You selected {state.name}. Please select a district. "
         for i, district in enumerate(districts):
@@ -466,6 +504,7 @@ def ivr_handle_state(request):
         response.say("Invalid choice.")
         response.redirect('/api/ivr/welcome/')
     return HttpResponse(str(response), content_type='text/xml')
+
 @csrf_exempt
 def ivr_handle_district(request, state_id):
     choice = request.POST.get('Digits')
@@ -478,6 +517,7 @@ def ivr_handle_district(request, state_id):
             response.say(f"Sorry, no clinics found for {district.name}. Please try again.")
             response.redirect(f'/api/ivr/handle-state/')
             return HttpResponse(str(response), content_type='text/xml')
+
         gather = response.gather(num_digits=len(str(clinics.count())), action=f'/api/ivr/handle-clinic/{district.id}/')
         say_message = f"You selected {district.name}. Please select a clinic. "
         for i, clinic in enumerate(clinics):
@@ -488,6 +528,7 @@ def ivr_handle_district(request, state_id):
         response.say("Invalid choice or error.")
         response.redirect('/api/ivr/welcome/')
     return HttpResponse(str(response), content_type='text/xml')
+
 @csrf_exempt
 def ivr_handle_clinic(request, district_id):
     choice = request.POST.get('Digits')
@@ -502,6 +543,7 @@ def ivr_handle_clinic(request, district_id):
         response.say("Invalid choice or error.")
         response.redirect('/api/ivr/welcome/')
     return HttpResponse(str(response), content_type='text/xml')
+
 @csrf_exempt
 def ivr_handle_booking_type(request, clinic_id):
     choice = request.POST.get('Digits')
@@ -513,15 +555,16 @@ def ivr_handle_booking_type(request, clinic_id):
             doctors = Doctor.objects.filter(clinic=clinic)
             best_doctor = None
             earliest_slot = None
+
             for doctor in doctors:
                 today_str = timezone.now().date().strftime('%Y-%m-%d')
-                slots_view = AvailableSlotsView()
-                available_slots = slots_view.get(request=None, doctor_id=doctor.id, date=today_str).data
+                available_slots = _get_available_slots_for_doctor(doctor.id, today_str)
                 if available_slots:
                     first_slot_time = datetime.strptime(available_slots[0], '%H:%M').time()
                     if earliest_slot is None or first_slot_time < earliest_slot:
                         earliest_slot = first_slot_time
                         best_doctor = doctor
+            
             if best_doctor:
                 final_response = create_and_speak_token(response, best_doctor, caller_phone_number)
                 return HttpResponse(str(final_response), content_type='text/xml')
@@ -529,12 +572,14 @@ def ivr_handle_booking_type(request, clinic_id):
                 response.say("Sorry, no doctors have available slots today. Please call back later.")
                 response.hangup()
                 return HttpResponse(str(response), content_type='text/xml')
+
         elif choice == '2':
             specializations = Doctor.objects.filter(clinic=clinic).values_list('specialization', flat=True).distinct()
             if not specializations:
                 response.say("Sorry, no specializations found for this clinic.")
                 response.redirect(f'/api/ivr/handle-clinic/{clinic.district.id}/')
                 return HttpResponse(str(response), content_type='text/xml')
+
             gather = response.gather(num_digits=len(str(len(specializations))), action=f'/api/ivr/handle-specialization/{clinic.id}/')
             say_message = "Please select a specialization. "
             for i, spec in enumerate(specializations):
@@ -548,6 +593,7 @@ def ivr_handle_booking_type(request, clinic_id):
         response.say("An error occurred. Please start over.")
         response.redirect('/api/ivr/welcome/')
     return HttpResponse(str(response), content_type='text/xml')
+
 @csrf_exempt
 def ivr_handle_specialization(request, clinic_id):
     choice = request.POST.get('Digits')
@@ -556,6 +602,7 @@ def ivr_handle_specialization(request, clinic_id):
         clinic = Clinic.objects.get(id=clinic_id)
         specializations = list(Doctor.objects.filter(clinic=clinic).values_list('specialization', flat=True).distinct())
         spec = specializations[int(choice) - 1]
+
         doctors = Doctor.objects.filter(clinic=clinic, specialization=spec)
         gather = response.gather(num_digits=len(str(doctors.count())), action=f'/api/ivr/handle-doctor/{clinic.id}/{spec}/')
         say_message = f"You selected {spec}. Please select a doctor. "
@@ -567,6 +614,7 @@ def ivr_handle_specialization(request, clinic_id):
         response.say("Invalid choice or error.")
         response.redirect(f'/api/ivr/handle-booking-type/{clinic.id}/')
     return HttpResponse(str(response), content_type='text/xml')
+
 @csrf_exempt
 def ivr_handle_doctor(request, clinic_id, spec):
     choice = request.POST.get('Digits')
@@ -580,3 +628,4 @@ def ivr_handle_doctor(request, clinic_id, spec):
         response.say("Invalid choice.")
         response.redirect(f'/api/ivr/handle-specialization/{clinic.id}/')
     return HttpResponse(str(response), content_type='text/xml')
+
