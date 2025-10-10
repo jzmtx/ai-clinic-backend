@@ -154,7 +154,7 @@ class ConfirmArrivalView(APIView):
                 now = timezone.now()
                 appointment_datetime = timezone.make_aware(datetime.combine(token.date, token.appointment_time))
                 
-                start_window = appointment_datetime - timedelta(minutes=20)
+                start_window = appointment_datetime - timedelta(hours=20)
                 end_window = appointment_datetime + timedelta(minutes=15)
 
                 if not (start_window <= now <= end_window):
