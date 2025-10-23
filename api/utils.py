@@ -1,29 +1,26 @@
 # api/utils.py
 
 from django.conf import settings
-from twilio.rest import Client
+# REMOVED: from twilio.rest import Client
+import logging
 
-def send_sms_notification(to_number, message_body):
+logger = logging.getLogger(__name__)
+
+def send_sms_notification(to_number, message):
     """
-    Sends an SMS notification using Twilio.
+    Simulates sending an SMS notification by printing it to the console.
+    This replaces Twilio to make the app free to use.
     """
-    if not to_number:
-        print("--- SMS NOT SENT: No 'to_number' provided. ---")
-        return False
+    # NOTE: The logic here is simplified to ensure it never crashes the app
+    # and only logs the message to the console for monitoring.
+    print("=====================================================")
+    print(f"SMS SIMULATION: To: {to_number}")
+    print(f"Message: {message}")
+    print("=====================================================")
+    
+    # Return success status for the calling functions (reminders, IVR, etc.)
+    return True 
 
-    # Ensure the phone number is in E.164 format for Twilio
-    if not to_number.startswith('+'):
-        to_number = f"+91{to_number}"
 
-    try:
-        client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
-        message = client.messages.create(
-            body=message_body,
-            from_=settings.TWILIO_PHONE_NUMBER,
-            to=to_number
-        )
-        print(f"SMS sent successfully to {to_number}, SID: {message.sid}")
-        return True
-    except Exception as e:
-        print(f"--- FAILED TO SEND SMS to {to_number}: {e} ---")
-        return False
+### **Step 1.2: Update `settings.py` for Render**
+

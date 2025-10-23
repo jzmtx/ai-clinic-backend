@@ -1,22 +1,33 @@
 import os
 from pathlib import Path
+import dj_database_url 
+import sys 
 
+# Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = 'django-insecure-=+c$c$j4z!0d9v$j1w!5a)0i=d!o(l!&!1v(l3x(e&n&n7z_d3'
+# --- 1. CORE PRODUCTION SETTINGS ---
+# IMPORTANT: Read secrets from Render environment variables 
+# Render requires the SECRET_KEY environment variable to be set.
+SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-=+c$c$j4z!0d9v$j1w!5a)0i=d!o(l!&!1v(l3x(e&n&n7z_d3')
 
-DEBUG = True
+# Set DEBUG=False for production! Use environment variable to control it
+# This will be True on your local machine and False on Render.
+DEBUG = 'RENDER' not in os.environ 
 
-ALLOWED_HOSTS = ['9ca573279699.ngrok-free.app', '127.0.0.1', 'localhost']
+# Render domain and localhost must be allowed
+ALLOWED_HOSTS = [os.environ.get('RENDER_EXTERNAL_HOSTNAME', '127.0.0.1'), 'localhost', '127.0.0.1']
 
 INSTALLED_APPS = [
+    # NEW: WhiteNoise must be first for serving static files efficiently
+    'whitenoise.runserver_nostatic', 
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'django_q',  # <-- ADDED FOR THE NEW WORKER
+    'django_q',
     'rest_framework',
     'rest_framework.authtoken',
     'corsheaders',
@@ -25,6 +36,8 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # NEW: WhiteNoise middleware for serving static files efficiently
+    'whitenoise.middleware.WhiteNoiseMiddleware', 
     'corsheaders.middleware.CorsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -54,12 +67,21 @@ TEMPLATES = [
 
 WSGI_APPLICATION = 'clinic_token_system.wsgi.application'
 
+
+# --- 2. DATABASE CONFIGURATION (PostgreSQL for Render) ---
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    'default': dj_database_url.config(
+        # Read DATABASE_URL from Render environment variable (for prod)
+        default=os.environ.get('DATABASE_URL', 'sqlite:///./db.sqlite3'),
+        conn_max_age=600,
+        conn_health_check=True,
+    )
 }
+
+# Ensure SQLite is used if we are running locally and not setting a production DB
+if 'RENDER' not in os.environ and 'test' not in sys.argv:
+    DATABASES['default']['ENGINE'] = 'django.db.backends.sqlite3'
+
 
 AUTH_PASSWORD_VALIDATORS = [
     { 'NAME': 'django.contrib.auth.password_validation.UserAttributeSimilarityValidator', },
@@ -75,25 +97,36 @@ REST_FRAMEWORK = {
 }
 
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Kolkata' 
 USE_I18N = True
 USE_TZ = True
 
-STATIC_URL = 'static/'
+# --- 3. STATIC FILES CONFIGURATION (for WhiteNoise) ---
+STATIC_URL = '/static/'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles') # Render will look here
+STORAGES = {
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+# --- CORS Configuration ---
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    # Render's automatic frontend URL is often needed here
+    os.environ.get("CORS_FRONTEND_URL", ""),
 ]
 CORS_ALLOW_CREDENTIALS = True
 
-TWILIO_ACCOUNT_SID = 'AC42134a8b01e3a1b89db87d2e30b58acc'
-TWILIO_AUTH_TOKEN = 'fd010d35f326b6ee646dd81ff4c29153'
-TWILIO_PHONE_NUMBER = '+12154340068'
+# --- 4. SMS/IVR CONFIGURATION (Dummy Keys for Simulation) ---
+# NOTE: api/utils.py uses a print statement, ignoring these keys, but they must be defined.
+TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', 'ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
+TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', 'your_auth_token')
+TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER', '+15005550006')
 
-# ====================================================================
-# DJANGO-Q SETTINGS
-# ====================================================================
+# --- 5. DJANGO-Q SETTINGS (Free Tier Only Runs Web) ---
 Q_CLUSTER = {
     'name': 'clinic-q-local',
     'workers': 4,
@@ -101,5 +134,7 @@ Q_CLUSTER = {
     'retry': 120,
     'queue_limit': 50,
     'catch_up': False,
-    'redis': 'redis://localhost:6379/0' # For local development
+    # Use environment variable for Redis connection
+    'redis': os.environ.get('REDIS_URL', 'redis://localhost:6379/0') 
 }
+# --- REMOVED: Firebase initialization code from previous attempts ---

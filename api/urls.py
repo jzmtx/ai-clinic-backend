@@ -10,13 +10,16 @@ urlpatterns = [
 
     # --- Patient Self-Service URLs ---
     path('register/patient/', views.PatientRegisterView.as_view(), name='patient-register'),
-    # OTP URLs have been removed
+    # --- REMOVED: Firebase OTP URL ---
     path('tokens/get_my_token/', views.GetPatientTokenView.as_view(), name='get-patient-token'),
     path('tokens/confirm_arrival/', views.ConfirmArrivalView.as_view(), name='confirm-arrival'),
     path('clinics_with_doctors/', views.ClinicWithDoctorsListView.as_view(), name='clinics-with-doctors'),
     path('tokens/patient_create/', views.PatientCreateTokenView.as_view(), name='patient-create-token'),
     path('tokens/patient_cancel/', views.PatientCancelTokenView.as_view(), name='patient-cancel-token'),
-    path('patient/live-queue/<int:doctor_id>/', views.PatientLiveQueueView.as_view(), name='patient-live-queue'),
+    
+    # --- MODIFIED: Changed this URL to accept a date for the queue view ---
+    path('patient/queue/<int:doctor_id>/<str:date>/', views.PatientLiveQueueView.as_view(), name='patient-live-queue'),
+    
     path('doctors/<int:doctor_id>/available-slots/<str:date>/', views.AvailableSlotsView.as_view(), name='available-slots'),
 
 
@@ -43,4 +46,8 @@ urlpatterns = [
     path('ivr/handle-booking-type/<int:clinic_id>/', views.ivr_handle_booking_type, name='ivr-handle-booking-type'),
     path('ivr/handle-specialization/<int:clinic_id>/', views.ivr_handle_specialization, name='ivr-handle-specialization'),
     path('ivr/handle-doctor/<int:clinic_id>/<str:spec>/', views.ivr_handle_doctor, name='ivr-handle-doctor'),
+    
+    # --- SMS Handling URL ---
+    path('sms/incoming/', views.handle_incoming_sms, name='incoming-sms'),
 ]
+
