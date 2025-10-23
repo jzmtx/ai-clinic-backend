@@ -8,11 +8,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # --- 1. CORE PRODUCTION SETTINGS ---
 # IMPORTANT: Read secrets from Render environment variables 
-# Render requires the SECRET_KEY environment variable to be set.
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-=+c$c$j4z!0d9v$j1w!5a)0i=d!o(l!&!1v(l3x(e&n&n7z_d3')
 
 # Set DEBUG=False for production! Use environment variable to control it
-# This will be True on your local machine and False on Render.
 DEBUG = 'RENDER' not in os.environ 
 
 # Render domain and localhost must be allowed
@@ -74,11 +72,11 @@ DATABASES = {
         # Read DATABASE_URL from Render environment variable (for prod)
         default=os.environ.get('DATABASE_URL', 'sqlite:///./db.sqlite3'),
         conn_max_age=600,
-        conn_health_check=True,
+        # --- FIX: Renamed check to checks ---
+        conn_health_checks=True, 
     )
 }
 
-# Ensure SQLite is used if we are running locally and not setting a production DB
 if 'RENDER' not in os.environ and 'test' not in sys.argv:
     DATABASES['default']['ENGINE'] = 'django.db.backends.sqlite3'
 
@@ -115,13 +113,12 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 # --- CORS Configuration ---
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    # Render's automatic frontend URL is often needed here
     os.environ.get("CORS_FRONTEND_URL", ""),
 ]
 CORS_ALLOW_CREDENTIALS = True
 
 # --- 4. SMS/IVR CONFIGURATION (Dummy Keys for Simulation) ---
-# NOTE: api/utils.py uses a print statement, ignoring these keys, but they must be defined.
+# NOTE: These variables are kept for code consistency but are ignored by api/utils.py
 TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', 'ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
 TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', 'your_auth_token')
 TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER', '+15005550006')
@@ -134,7 +131,5 @@ Q_CLUSTER = {
     'retry': 120,
     'queue_limit': 50,
     'catch_up': False,
-    # Use environment variable for Redis connection
     'redis': os.environ.get('REDIS_URL', 'redis://localhost:6379/0') 
 }
-# --- REMOVED: Firebase initialization code from previous attempts ---
