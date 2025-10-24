@@ -8,7 +8,7 @@ python manage.py migrate --noinput
 
 # NEW LINE ADDED HERE:
 echo "--- Loading initial clinic data..."
-python manage.py loaddata initial_data.json
+python manage.py loaddata initial_data.json --encoding=utf8
 
 echo "--- Collecting static files..."
 python manage.py collectstatic --noinput
