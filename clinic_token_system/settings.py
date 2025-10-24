@@ -17,7 +17,7 @@ DEBUG = 'RENDER' not in os.environ
 ALLOWED_HOSTS = [os.environ.get('RENDER_EXTERNAL_HOSTNAME', '127.0.0.1'), 'localhost', '127.0.0.1']
 
 INSTALLED_APPS = [
-    # NEW: WhiteNoise must be first for serving static files efficiently
+    # NEW: WhiteNoise must be first for development static serving
     'whitenoise.runserver_nostatic', 
     'django.contrib.admin',
     'django.contrib.auth',
@@ -111,8 +111,10 @@ STORAGES = {
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # --- CORS Configuration ---
+# NOTE: Removed the environment reading that caused the earlier migration error
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
+    # Render will inject the live Netlify/Frontend URL here via ENV variable
     os.environ.get("CORS_FRONTEND_URL", ""),
 ]
 CORS_ALLOW_CREDENTIALS = True

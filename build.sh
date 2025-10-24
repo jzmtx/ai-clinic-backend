@@ -6,6 +6,13 @@ echo "--- Running database migrations..."
 # This runs makemigrations and migrate only on the initial deployment
 python manage.py migrate --noinput
 
+# NEW LINE ADDED HERE:
+echo "--- Loading initial clinic data..."
+python manage.py loaddata initial_data.json
+
+echo "--- Collecting static files..."
+python manage.py collectstatic --noinput
+
 echo "--- Collecting static files..."
 # Collects all CSS/JS files into the 'staticfiles' directory
 python manage.py collectstatic --noinput
