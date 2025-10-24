@@ -7,17 +7,14 @@ import sys
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # --- 1. CORE PRODUCTION SETTINGS ---
-# IMPORTANT: Read secrets from Render environment variables 
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-=+c$c$j4z!0d9v$j1w!5a)0i=d!o(l!&!1v(l3x(e&n&n7z_d3')
 
-# Set DEBUG=False for production! Use environment variable to control it
 DEBUG = 'RENDER' not in os.environ 
 
-# Render domain and localhost must be allowed
 ALLOWED_HOSTS = [os.environ.get('RENDER_EXTERNAL_HOSTNAME', '127.0.0.1'), 'localhost', '127.0.0.1']
 
 INSTALLED_APPS = [
-    # NEW: WhiteNoise must be first for development static serving
+    # NEW: WhiteNoise must be first for serving static files efficiently
     'whitenoise.runserver_nostatic', 
     'django.contrib.admin',
     'django.contrib.auth',
@@ -69,10 +66,8 @@ WSGI_APPLICATION = 'clinic_token_system.wsgi.application'
 # --- 2. DATABASE CONFIGURATION (PostgreSQL for Render) ---
 DATABASES = {
     'default': dj_database_url.config(
-        # Read DATABASE_URL from Render environment variable (for prod)
         default=os.environ.get('DATABASE_URL', 'sqlite:///./db.sqlite3'),
         conn_max_age=600,
-        # --- FIX: Renamed check to checks ---
         conn_health_checks=True, 
     )
 }
@@ -101,7 +96,7 @@ USE_TZ = True
 
 # --- 3. STATIC FILES CONFIGURATION (for WhiteNoise) ---
 STATIC_URL = '/static/'
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles') # Render will look here
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 STORAGES = {
     "staticfiles": {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
@@ -110,22 +105,19 @@ STORAGES = {
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# --- CORS Configuration ---
-# NOTE: Removed the environment reading that caused the earlier migration error
+# --- 4. CORS Configuration ---
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    # Render will inject the live Netlify/Frontend URL here via ENV variable
     os.environ.get("CORS_FRONTEND_URL", ""),
 ]
 CORS_ALLOW_CREDENTIALS = True
 
-# --- 4. SMS/IVR CONFIGURATION (Dummy Keys for Simulation) ---
-# NOTE: These variables are kept for code consistency but are ignored by api/utils.py
+# --- 5. SMS/IVR CONFIGURATION (Dummy Keys for Simulation) ---
 TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', 'ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX')
 TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', 'your_auth_token')
 TWILIO_PHONE_NUMBER = os.environ.get('TWILIO_PHONE_NUMBER', '+15005550006')
 
-# --- 5. DJANGO-Q SETTINGS (Free Tier Only Runs Web) ---
+# --- 6. DJANGO-Q SETTINGS (Free Tier Only Runs Web) ---
 Q_CLUSTER = {
     'name': 'clinic-q-local',
     'workers': 4,
