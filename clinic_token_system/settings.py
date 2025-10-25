@@ -106,10 +106,15 @@ STORAGES = {
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # --- 4. CORS Configuration ---
+# --- 4. CORS Configuration (Fixes the E013 Error) ---
+# Read the environment variable, using None as fallback instead of ""
+# settings.py (CORS Fix)
+CORS_FRONTEND_URL = os.environ.get("CORS_FRONTEND_URL") 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
-    os.environ.get("CORS_FRONTEND_URL", ""),
 ]
+if CORS_FRONTEND_URL:
+    CORS_ALLOWED_ORIGINS.append(CORS_FRONTEND_URL)
 CORS_ALLOW_CREDENTIALS = True
 
 # --- 5. SMS/IVR CONFIGURATION (Dummy Keys for Simulation) ---
